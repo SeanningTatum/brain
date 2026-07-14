@@ -54,3 +54,4 @@ Two complementary paths — install either or both:
 ```
 
 See `.brain/HARNESS.md` for the 5-subsystem harness model this serves.
+# brain
