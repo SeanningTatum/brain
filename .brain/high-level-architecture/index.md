@@ -1,36 +1,47 @@
 # High-Level Architecture — Index
 
-System-level docs. Conceptual diagrams, runtime model, data flow, security posture, third-party surface area. **Read these before designing a feature** — they establish the "what runs where" mental model.
-
-> **Base template.** Add one file per macro concern. Delete this note when populated.
+System-level docs. **Read before designing a feature** — they establish the "what runs where" mental model.
 
 ## Files
 
 | File | Covers | Read when |
 |------|--------|-----------|
-| `architecture.md` | System layers, data flow, layer responsibilities | Designing any new feature; touching the request lifecycle |
-| `data-models.md` | Entity diagrams, table schemas, migrations | Adding a table, FK, or migration |
-| `security.md` | Auth flow, session management, RBAC, input validation, secrets | Anything touching auth, permissions, secrets, or PII |
-| `integrations.md` | External services, bindings, third-party SDKs | Wiring a new external service |
-| `user-journeys.md` | Key end-to-end flows (signup, login, core actions) | Building UI flows; verifying gates |
+| [`architecture.md`](architecture.md) | The two runtime shapes: (1) the synchronous CLI (`brain <cmd>` reads/writes a `.brain` dir, prints TOON, exits) and (2) the `brain review` three-process model (CLI ↔ detached localhost server ↔ browser chrome + injected SDK) | Designing any command; touching the review loop |
 
 ## Quick mental model
 
+**Core CLI — stateless, synchronous:**
+
 ```
-<one-block diagram: Client → server → data stores>
+agent shell ──▶ brain <cmd> [flags]
+                   │  findBrain() walks up for .brain/
+                   ▼
+              read/write .brain files ──▶ TOON on stdout ──▶ exit(0|1|2)
+                                          diagnostics on stderr
 ```
 
-> Replace with a 3–5 line ASCII picture of where a request goes. This is the single most-referenced thing in the folder.
+**`brain review` — three cooperating processes:**
+
+```
+  agent (CLI)                detached server (127.0.0.1:4517)             browser
+  brain review <file>  ──▶   POST /api/open ─┐                        ┌─▶ chrome.html
+  brain review poll    ◀──   long-poll ──────┤ sessions (state.json)  │   ├─ iframe: artifact + injected sdk.js
+       (heartbeat)           SSE /events ─────┼── watch artifact ──────┤   └─ sidebar: brain context, composer
+  apply edits + reply  ──▶   /api/poll?reply ─┘ persist rounds ─────┐  │
+                                              plans/ screenshots/   └──┴─▶ POST /api/feedback (annotations)
+                                              verifications/ into .brain
+```
+
+The agent never talks to the browser directly — everything crosses through the server. The browser never touches the artifact's origin — the iframe is sandboxed without `allow-same-origin`, all crossing via `postMessage`.
 
 ## Important things to look at
 
-- `architecture.md` data flow diagram — single source for "where does a request go"
-- `data-models.md` entity relationships — every new table extends this graph
-- `integrations.md` external-service table — what's wired and how
+- The CLI layering (TOON → errors → flags → discovery → commands) in [`../codebase/programming-model.md`](../codebase/programming-model.md).
+- [`docs/REVIEW-ARCHITECTURE.md`](../../docs/REVIEW-ARCHITECTURE.md) — the exhaustive review contract: HTTP API, prompt shape, postMessage protocol, brain persistence layout, security invariants, addenda v2–v6.6.
+- The trust boundary: everything a browser sends is normalized/whitelisted server-side before an agent ever sees it.
 
 ## Update triggers
 
-- Add/remove a top-level service or store → `architecture.md` + `integrations.md`
-- Add/rename a table → `data-models.md`
-- Change auth/RBAC/session → `security.md` + `user-journeys.md`
-- Add new third-party SDK → `integrations.md`
+- Add/rename a CLI command → note it in `architecture.md` if it changes the runtime shape
+- Change the review process model, HTTP routes, or persistence layout → `architecture.md` + `docs/REVIEW-ARCHITECTURE.md`
+- Change a security invariant → `architecture.md` + `../rules/review-server.md`

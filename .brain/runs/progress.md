@@ -21,4 +21,27 @@
 
 ---
 
+## 2026-07-14 — Harness loop closed: .brain-onto-itself + .claude/commands verified. skill --check + brain check 8/8 green. Run note 2026-07-14-harness-self-setup shipped.
+- branch: `feat/execution-mode-v2`
+- in-progress feature: none
+- run note: none
+- next: idle — optional: commit run artifacts + .claude/commands; add slash-commands section to CLAUDE.md
+
+---
+
+## 2026-07-14 — Walking harness loop to formalize .brain-onto-itself + .claude/commands setup. Run note 2026-07-14-harness-self-setup opened.
+- branch: `feat/execution-mode-v2`
+- in-progress feature: none
+- run note: none
+- next: verify-done: brain coherence + check + skill, then checkpoint
+
+---
+
+## 2026-07-14 — Turned .brain onto brain-axi itself: real HARNESS, codebase/programming-model, 4 layer rules, architecture, feat-001 core-cli (shipped) + feat-002 brain-review (in-progress). check 8/8, skill --check green.
+- branch: `main`
+- in-progress feature: none
+- run note: none
+
+---
+
 _No entries yet — append the first checkpoint above this line._

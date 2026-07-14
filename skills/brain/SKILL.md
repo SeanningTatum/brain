@@ -19,11 +19,68 @@ All commands print TOON-structured output. Run from anywhere inside the repo; th
 - `brain search "<query>"` — find text anywhere in the brain (`--section rules` to narrow)
 - `brain features view <slug>` — tracker fields + feature doc
 - `brain runs view <name>` — deep per-task state (baselines, dead ends, decisions)
+- `npx -y brain-axi playbook plan` — the plan artifact standard (structure, decision cards, diagrams)
 
 ## Record state (end of task / checkpoint)
 
 - `brain progress add --summary "..." --next "..."` — append a session checkpoint
-- `brain features set-status <slug> --status <planned|in-progress|shipped|blocked|cut>` — flip feature state (enforces one-in-progress policy)
+- `brain features set-status <slug> --status <planned|in-progress|shipped|blocked|cut>` — flip feature state (enforces one-in-progress policy; `--status shipped` requires `--evidence`)
+- `brain check` — deterministic harness invariants (feature list validity, one-in-progress, doc paths, dependency refs, plan/review file integrity, verification docs); exit 1 on any failure, CI-usable
+- `brain` (home) shows an open `sessions[...]` table whenever a review session isn't ended yet
+
+## Feature-centric `.brain/` layout
+
+Everything about a feature lives in its own folder. Every reader below merges
+this layout with the legacy flat one, so older brains keep working:
+
+```
+.brain/features/feature_list.json          tracker (doc paths point at features/<slug>/<slug>.md)
+.brain/features/<slug>/
+  <slug>.md                                feature doc
+  screenshots/NN-<step>.png                golden path (01-, 02-, ...); error paths E1-, E2-, ...
+  verifications/<YYYY-MM-DD>.md            browser-walk verdict docs (PASS/FAIL/BLOCKED evidence)
+  runs/<YYYY-MM-DD>-<task>.md              per-feature run notes
+  plans/<plan-slug>/                       review plans scoped to this feature
+.brain/runs/progress.md                    stays global — rolling session cursor
+.brain/plans/<plan-slug>/                  fallback pool: plans not tied to a feature
+```
+
+- `npx -y brain-axi shots add <img> --feature <slug> --step 01-signin` — primary
+  form; lands at `.brain/features/<slug>/screenshots/01-signin.png`. `--scope`
+  still works as a legacy alias.
+- Capturing the screenshots is YOUR job, not the CLI's (brain-axi ships no
+  browser automation): scaffold a throwaway Playwright script per
+  `npx -y brain-axi playbook verify` (project-pinned playwright, or
+  `npx -y playwright install chromium`), screenshot each step, add via
+  `shots add`, delete the script.
+- `brain shots [<feature>]` — merged list (per-feature + legacy).
+- `brain review <plan.html> --feature <slug>` — binds the plan under that
+  feature's `plans/` dir instead of the legacy fallback pool.
+
+## Verifications — proof a feature actually works
+
+- `npx -y brain-axi playbook verify` — the verification-doc standard: browser
+  walk (golden path + one error path), screenshot naming, the jsErrors/
+  networkErrors console policy, and how to persist the evidence.
+- `brain verifications [<feature>]` — list verdict docs (feature, date, verdict).
+- `brain verifications view <feature> <date>` — read one in full.
+
+After implementing and testing a user-visible feature, produce a verification
+doc at `.brain/features/<slug>/verifications/<date>.md` following
+`brain playbook verify` — this is how "it works" becomes checkable evidence
+instead of a claim.
+
+## Execution loop — implementing an approved plan / working a feature to shipped
+
+Run `npx -y brain-axi playbook execute` and follow it. Short version: `features
+set-status <slug> --status in-progress` → per step `runs append <slug> --step
+"..." --observed "..."` (verbatim command output, not a paraphrase) → `shots add
+--feature <slug> --step NN-name` on every visual test, pass AND fail → a
+verification doc per `playbook verify` → `brain ship <slug> --evidence "..."`
+(requires evidence; no-ops if already shipped; warns — does not block — on zero
+screenshots; checkpoints; runs `brain check` and reports failures honestly
+without rolling back the ship). `runs/progress.md` stays a rolling cursor;
+`features/<slug>/runs/*.md` is the deep, verbatim record.
 
 ## Plan review (human-in-the-loop) — the DEFAULT for plans and approvals
 
@@ -34,9 +91,12 @@ in order, in the current turn:
 1. **Read the brain first** — `brain progress`, `brain features`, `brain plans`,
    `brain timeline`. Weave what you find into the plan (cite prior plans, decisions,
    in-progress feature, relevant rules).
-2. **Write the plan as ONE standalone HTML file** (inline CSS, no CDN links, no build
-   step — it must render opened directly). Any path works; `<repo>/plans/<topic>.html`
-   is a good default.
+2. **Run `npx -y brain-axi playbook plan` and follow it** to write the plan as ONE
+   standalone HTML file (inline CSS, system fonts, no build step — it must render
+   opened directly). The playbook covers the 11-section structure, decision cards,
+   and diagram options (a CDN-based Mermaid snippet that degrades to readable text
+   offline, or hand-rolled inline SVG for zero network dependency). Any path works;
+   `<repo>/plans/<topic>.html` is a good default.
 3. **`npx -y brain-axi review <plan.html>`** — this pops the review UI in the user's
    browser. The UI shows your plan beside brain memory panels (past plans, timeline,
    screenshots), so the human reviews with full context.
@@ -48,15 +108,20 @@ in order, in the current turn:
 5. When the poll returns prompts, apply each requested change to the SAME html file
    (the browser hot-reloads it), then
    `npx -y brain-axi review poll <plan.html> --agent-reply "what you changed"`
-   and wait again.
+   and wait again. Each prompt carries `line` + `text` anchors (server-resolved
+   against the artifact's current content) — apply edits with targeted reads
+   (offset/limit) and anchored replacements; do NOT re-read the whole artifact
+   just to find what a prompt refers to.
 6. Repeat step 5 until the plan is approved or the session ends.
 
 Rules:
 
 - If a poll response shows `ended_by: user` (or `next_step` says the user ended it): **stop polling, do not reopen the browser**, apply any remaining feedback, and report the outcome in the conversation. Only reopen with `review <plan.html> --reopen` if the user explicitly asks to resume.
+- If a poll response carries `layout_warnings`, fix any `severity: error` entry and wait for the next poll to confirm a clean audit; if the SAME warning comes back `persistent: true`, proceed and mention it to the human instead of looping.
+- A poll's DOM snapshot is a compact outline, not the raw page — it prints as `snapshot_chars: N` by default; pass `--snapshot` to see the full outline block only when you actually need it.
 - `npx -y brain-axi review end <plan.html>` — end the session yourself once the plan is fully approved
-- `npx -y brain-axi shots add <img> --scope <plan-or-feature>` — attach a screenshot to a plan or feature
+- `npx -y brain-axi shots add <img> --feature <slug> --step <NN-name>` — attach a screenshot to a feature (`--scope <plan-or-feature>` is the legacy form)
 - `npx -y brain-axi plans` / `plans view <slug>` — see past plan artifacts and their review rounds
-- `npx -y brain-axi timeline` — merged history across checkpoints, run notes, and plan reviews
+- `npx -y brain-axi timeline` — merged history across checkpoints, run notes, plan reviews, and verifications
 
 Every command supports `--help`. Errors print an `error:` line plus a `help:` line with the corrected command.

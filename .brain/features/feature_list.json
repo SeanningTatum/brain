@@ -1,21 +1,32 @@
 {
   "$schema": "Machine-readable feature state tracker. Source of truth for status; per-feature MD docs are source of truth for design/runtime.",
-  "updated": "YYYY-MM-DD",
+  "updated": "2026-07-14",
   "policy": {
     "one_in_progress_at_a_time": true,
-    "definition_of_done": "implementation complete + verify-done passed + feature MD updated + brain coherent"
+    "definition_of_done": "implementation complete + verify-done passed (CLI invoked against .brain, exit codes + TOON eyeballed, stderr diagnostics-only) + feature MD updated + brain skill --check green + brain coherent"
   },
   "features": [
     {
-      "id": "feat-000",
-      "name": "<Feature Name>",
-      "slug": "<kebab-slug>",
-      "doc": ".brain/features/<kebab-slug>.md",
-      "description": "<one-line what-and-how>",
+      "id": "feat-001",
+      "name": "Core AXI CLI",
+      "slug": "core-cli",
+      "doc": ".brain/features/core-cli/core-cli.md",
+      "description": "Zero-dep Node ESM `brain` CLI that reads/writes a target .brain harness (features, progress, runs, docs, search, context, setup, skill) and emits TOON on stdout.",
       "dependencies": [],
-      "status": "planned",
-      "evidence": "<tests / e2e / manual verification proving it works>",
-      "owners": ["<owner>"]
+      "status": "shipped",
+      "evidence": "manual: `node bin/brain.js` + every subcommand run against fixture .brain, exit codes + TOON output eyeballed; `brain skill --check` green; committed in c1b0880 (first iteration).",
+      "owners": ["sean"]
+    },
+    {
+      "id": "feat-002",
+      "name": "brain review — interactive plan review surface",
+      "slug": "brain-review",
+      "doc": ".brain/features/brain-review/brain-review.md",
+      "description": "Localhost HTTP server + browser chrome + injected artifact SDK. Agent writes an HTML plan, opens a review session, long-polls for annotations/feedback, applies edits, loops. Plans/reviews/screenshots/verifications persist into .brain. Includes execution mode (runs append, check, ship).",
+      "dependencies": ["core-cli"],
+      "status": "in-progress",
+      "evidence": "WIP (uncommitted in lib/review/*, playbooks.js untracked). Contract: docs/REVIEW-ARCHITECTURE.md. Pending: verify-done browser walk + brain check green before ship.",
+      "owners": ["sean"]
     }
   ]
 }

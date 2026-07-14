@@ -1,86 +1,86 @@
 # Recipe: Verify done (termination check)
 
-Run this before declaring a task complete. Externalises the "am I finished?" judgment so the agent does not declare victory on a half-built feature.
+Run before declaring a task complete. `brain-axi` has **no test framework, no build, no lint** — verification = invoke the affected command and eyeball behavior.
 
 ## Why this exists
 
-Agents tend to stop at "code compiles" or "tests pass without re-running them." This list forces an actual end-to-end pass + brain-coherence check before handoff.
+Agents stop at "the code looks right." This list forces an actual run + brain-coherence check before handoff.
 
-## 1. Code health
-
-```bash
-<typecheck command>
-<test command>
-```
-
-Both must be green **on the post-change tree**, not from memory of an earlier run.
-
-## 2. End-to-end (default ON)
+## 1. Run the affected command(s)
 
 ```bash
-<e2e command>
+node bin/brain.js <cmd> --brain .brain
+echo $?          # 0 success/no-op, 1 opError, 2 usageError — must match intent
 ```
 
-**Default: run.** E2E is the only layer that catches real wiring breakage. Skipping is the single biggest source of premature "done."
+For every command you touched: run it against the local `.brain`, confirm the **exit code**, eyeball the **TOON on stdout**, and confirm **stderr is diagnostics-only** (no payload leaked to stderr, no free text on stdout). Every result must end with a `help:` list.
 
-**Opt-out only when** the diff is purely a brain doc / comment-only change, a unit-test-only change with no source touched, or an isolated helper with no consumer wiring change. If you opt out, append a one-line justification to your run note under "Skipped checks". No silent skips.
-
-## 3. Build (if needed)
-
-If you changed build config, bindings, or runtime composition:
+Write commands mutate the fixture — after testing, reset:
 
 ```bash
-<build command>
+git checkout .brain/
 ```
 
-Catches environment-specific issues that local dev hides.
+## 2. Skill drift gate
 
-## 4. Manual smoke (if UI)
+```bash
+node bin/brain.js skill --check
+echo $?          # MUST be 0 — 1 means skillContent() drifted from the real commands
+```
 
-If a user-visible flow changed: run the app → walk the golden path → walk one error path. Note exactly what you exercised in the run note. **Do not claim UI works without opening the browser.**
+If you added/renamed a command or changed guidance, update `skillContent()` until this is green.
 
-## 5. Brain coherence
+## 3. Browser walk (ONLY for `brain review` changes)
 
-Look at your diff (`git diff --stat`). For every changed path, ask which brain doc owns it and update it.
+If you touched `lib/review/*`: start the server, open a session, exercise the real flow.
 
-> Fill this table with your project's `path → brain doc` mapping. This is the same mapping a pre-commit hook can print at commit time — front-loading it here.
+```bash
+node lib/review/server.js            # or: node bin/brain.js review <some.html> --brain .brain
+```
+
+Walk: annotate mode (Cmd/Ctrl+I) → composer send → SSE reload on artifact edit → presence pill → `brain review poll` receives normalized prompts. **Do not claim the review UI works without opening the browser.** Skip only for pure server/store/brain-data changes with no browser surface — note the skip in your run note.
+
+## 4. Brain coherence
+
+`git diff --stat` → for every changed path, update the owning brain doc:
 
 | Touched | Brain doc to update |
 |---------|---------------------|
-| `<data-schema path>` | `high-level-architecture/data-models.md` |
-| `<data-access path>` | `rules/<data-layer>.md` |
-| `<service path>` | `rules/<service-layer>.md` + `high-level-architecture/integrations.md` |
-| `<route/API path>` | `rules/routes.md` |
-| `<error path>` | `rules/errors.md` |
-| `<UI path>` | `rules/frontend.md` |
-| New / changed feature behaviour | `features/<slug>.md` |
-| Architectural shift | `CHANGELOG.md` |
+| `bin/brain.js` command surface | `codebase/programming-model.md`, `rules/cli-commands.md`, and `skillContent()` |
+| TOON / output behavior | `rules/toon-axi.md` |
+| `lib/review/server.js`,`store.js`,`brain-data.js` | `rules/review-server.md` + `docs/REVIEW-ARCHITECTURE.md` |
+| `lib/review/chrome.*`,`sdk.js` | `rules/review-browser.md` + `docs/REVIEW-ARCHITECTURE.md` |
+| Feature behavior change | `features/<slug>/<slug>.md` (Changelog table) |
+| Architectural / harness shift | `CHANGELOG.md` + bump `feature_list.json` `updated` |
 
-## 6. Non-negotiables sweep
-
-Grep your diff for your project's forbidden patterns:
+## 5. Non-negotiables sweep
 
 ```bash
-git diff --stat | head
-git diff | grep -E '^\+' | grep -E '<forbidden-pattern-regex>'
+git diff | grep -E '^\+' | grep -E 'console\.log|require\(|from "[^.]' # stdout free text / CommonJS / npm import smells
 ```
 
-Any hit = re-read the programming-model doc in [`../codebase/`](../codebase/) and fix before shipping.
+Any hit → re-read `codebase/programming-model.md` and fix. (Legit stdout goes through `print()`; imports are Node stdlib or relative.)
+
+## 6. brain check (if `brain check` exists / review feature touched)
+
+```bash
+node bin/brain.js check --brain .brain   # exit 1 if any harness invariant fails
+```
 
 ## 7. Close the run note
 
-If you opened one, append a final entry: what shipped, what is left, what surprised you. Future you will read this.
+Append: what shipped, what's left, what surprised you.
 
 ## Definition of done
 
-- [ ] typecheck green
-- [ ] test green
-- [ ] e2e green (default — opt-out only with run-note justification per §2)
-- [ ] build green (if needed)
-- [ ] Manual smoke walked (if UI)
+- [ ] Affected command(s) run: exit code + TOON + stderr verified
+- [ ] `brain skill --check` green
+- [ ] Browser walk done (if `brain review` touched) or skip justified
 - [ ] Every diffed path → owning brain doc updated
 - [ ] No non-negotiables grep hits
-- [ ] Feature memo + `CHANGELOG.md` updated if applicable
+- [ ] `brain check` green (if applicable)
+- [ ] Feature MD + `CHANGELOG.md` updated if applicable
+- [ ] `git checkout .brain/` ran after write-command tests
 - [ ] Run note closed (if opened)
 
-Only after all boxes are checked: report task done to user.
+Only after all boxes: report done.
