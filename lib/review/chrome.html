@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>{{TITLE}}</title>
+<style>
+  :root {
+    --bg: #0b0c10;
+    --bg-panel: #14161c;
+    --bg-elevated: #1b1e26;
+    --bg-hover: #21242e;
+    --border: #262a35;
+    --text: #e6e8ee;
+    --text-dim: #8b93a7;
+    --text-faint: #5b6172;
+    --accent: #6d5dfc;
+    --accent-dim: #4b3fd1;
+    --green: #3ddc84;
+    --amber: #f5a623;
+    --gray: #6b7280;
+    --danger: #ef4444;
+    --radius: 6px;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    overflow: hidden;
+  }
+
+  button, textarea, input {
+    font-family: inherit;
+    font-size: inherit;
+    color: inherit;
+  }
+
+  button {
+    cursor: pointer;
+  }
+
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    width: 100vw;
+  }
+
+  /* ---- topbar ---- */
+
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 14px;
+    height: 44px;
+    flex-shrink: 0;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .topbar-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .title {
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 40vw;
+  }
+
+  .topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .presence-pill {
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+
+  .presence-pill[data-state="listening"] { color: var(--green); border-color: rgba(61,220,132,0.35); }
+  .presence-pill[data-state="working"] { color: var(--amber); border-color: rgba(245,166,35,0.35); }
+  .presence-pill[data-state="waiting"] { color: var(--gray); }
+  .presence-pill[data-state="ended"] { color: var(--red, #e5484d); border-color: rgba(229,72,77,0.35); }
+
+  .mode-toggle {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 5px 12px;
+    font-weight: 500;
+  }
+
+  .mode-toggle.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+
+  .menu { position: relative; }
+
+  .menu-btn {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    width: 28px;
+    height: 28px;
+    line-height: 1;
+    font-size: 16px;
+    color: var(--text-dim);
+  }
+
+  .menu-btn:hover { background: var(--bg-elevated); border-color: var(--border); }
+
+  .menu-dropdown {
+    position: absolute;
+    right: 0;
+    top: 34px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    min-width: 170px;
+    padding: 4px;
+    z-index: 20;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  }
+
+  .menu-dropdown button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: none;
+    padding: 7px 10px;
+    border-radius: 4px;
+  }
+
+  .menu-dropdown button:hover { background: var(--bg-hover); }
+
+  /* ---- main layout ---- */
+
+  .main {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+  }
+
+  .artifact-pane {
+    flex: 1 1 auto;
+    min-width: 0;
+    background: #fff;
+  }
+
+  .artifact-frame {
+    width: 100%;
+    height: 100%;
+    border: none;
+    display: block;
+  }
+
+  .sidebar {
+    width: 360px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--bg-panel);
+    border-left: 1px solid var(--border);
+  }
+
+  .tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .tab-btn {
+    flex: 1;
+    background: transparent;
+    border: none;
+    padding: 9px 0;
+    color: var(--text-dim);
+    font-weight: 500;
+    border-bottom: 2px solid transparent;
+  }
+
+  .tab-btn.active {
+    color: var(--text);
+    border-bottom-color: var(--accent);
+  }
+
+  .tab-content {
+    flex: 1 1 40%;
+    overflow-y: auto;
+    padding: 10px 12px;
+    min-height: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .panel-section { display: flex; flex-direction: column; gap: 6px; }
+
+  .section-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-faint);
+    margin-top: 12px;
+  }
+
+  .section-title:first-child { margin-top: 0; }
+
+  .muted { color: var(--text-dim); line-height: 1.4; }
+
+  .empty-note {
+    color: var(--text-faint);
+    font-style: italic;
+    padding: 4px 0;
+  }
+
+  .timeline-list, .queue-list, .chat-list { display: flex; flex-direction: column; gap: 6px; }
+
+  .timeline-row {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+
+  .badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+
+  .timeline-info { color: var(--text-dim); }
+
+  .review-item {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  .review-head {
+    padding: 6px 8px;
+    cursor: pointer;
+    color: var(--text-dim);
+  }
+
+  .review-head:hover { background: var(--bg-hover); }
+
+  .review-body {
+    padding: 6px 8px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .review-prompt { color: var(--text); font-size: 12px; }
+
+  .plan-row { padding: 2px 0; }
+
+  .shots-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .shot-cell { display: flex; flex-direction: column; gap: 4px; }
+
+  .shot-cell img {
+    width: 100%;
+    height: 80px;
+    object-fit: cover;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    cursor: zoom-in;
+  }
+
+  .shot-caption {
+    font-size: 11px;
+    color: var(--text-faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* ---- conversation ---- */
+
+  .conversation {
+    flex: 1 1 60%;
+    overflow-y: auto;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 0;
+  }
+
+  .annotation-card {
+    border: 1px solid var(--accent);
+    border-radius: var(--radius);
+    padding: 8px;
+    background: var(--bg-elevated);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .annotation-label {
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  .annotation-input {
+    width: 100%;
+    resize: vertical;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px;
+    color: var(--text);
+  }
+
+  .annotation-actions { display: flex; justify-content: flex-end; }
+
+  .card-cancel {
+    background: transparent;
+    border: none;
+    color: var(--text-faint);
+    font-size: 11px;
+    padding: 2px 4px;
+  }
+
+  .card-cancel:hover { color: var(--danger); }
+
+  .annotation-pill {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 4px 10px;
+    cursor: pointer;
+  }
+
+  .annotation-pill:hover { border-color: var(--accent); }
+
+  .pill-label {
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .pill-remove {
+    background: transparent;
+    border: none;
+    color: var(--text-faint);
+    font-size: 14px;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+
+  .pill-remove:hover { color: var(--danger); }
+
+  .chat-bubble {
+    max-width: 92%;
+    padding: 7px 10px;
+    border-radius: 8px;
+    line-height: 1.4;
+  }
+
+  .chat-bubble.user {
+    align-self: flex-end;
+    background: var(--accent-dim);
+    color: #fff;
+  }
+
+  .chat-bubble.agent {
+    align-self: flex-start;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+  }
+
+  .bubble-text { white-space: pre-wrap; word-break: break-word; }
+
+  /* ---- composer ---- */
+
+  .composer {
+    flex-shrink: 0;
+    padding: 10px 12px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-panel);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  #composerInput {
+    width: 100%;
+    resize: vertical;
+    min-height: 44px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px;
+  }
+
+  #composerInput:focus { outline: 1px solid var(--accent); }
+
+  .composer-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .composer-actions button {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 6px 12px;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 500;
+    border-color: var(--accent);
+  }
+
+  .composer-actions button.secondary {
+    background: transparent;
+    color: var(--text);
+  }
+
+  .composer-actions button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* ---- lightbox ---- */
+
+  .lightbox {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    cursor: zoom-out;
+  }
+
+  .lightbox[hidden] { display: none; }
+
+  .lightbox img {
+    max-width: 90vw;
+    max-height: 90vh;
+    border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+<div class="app" id="app" data-key="{{KEY}}">
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="title" id="planTitle">{{TITLE}}</span>
+    </div>
+    <div class="topbar-right">
+      <span class="presence-pill" id="presencePill" data-state="waiting">No agent connected</span>
+      <button class="mode-toggle" id="modeToggle" type="button" title="Toggle annotate mode (Cmd/Ctrl+I)">Explore</button>
+      <div class="menu">
+        <button class="menu-btn" id="menuBtn" type="button" aria-label="More options">&#8942;</button>
+        <div class="menu-dropdown" id="menuDropdown" hidden>
+          <button type="button" data-action="end">End session</button>
+          <button type="button" data-action="copy-path">Copy file path</button>
+          <button type="button" data-action="reload">Reload artifact</button>
+        </div>
+      </div>
+    </div>
+  </header>
+  <main class="main">
+    <div class="artifact-pane">
+      <iframe
+        id="artifactFrame"
+        class="artifact-frame"
+        sandbox="allow-scripts allow-forms allow-popups allow-downloads"
+        title="Review artifact"
+      ></iframe>
+    </div>
+    <aside class="sidebar">
+      <nav class="tabs" id="sidebarTabs">
+        <button class="tab-btn active" type="button" data-tab="context">Context</button>
+        <button class="tab-btn" type="button" data-tab="plans">Plans</button>
+        <button class="tab-btn" type="button" data-tab="shots">Shots</button>
+      </nav>
+      <div class="tab-content" id="tabContent"></div>
+      <div class="conversation" id="conversation">
+        <div class="queue-list" id="queueList"></div>
+        <div class="chat-list" id="chatList"></div>
+      </div>
+      <div class="composer" id="composer">
+        <textarea id="composerInput" rows="2" placeholder="Message the agent... (Enter to send, Shift+Enter for newline)"></textarea>
+        <div class="composer-actions">
+          <button type="button" id="sendBtn">Send to Agent</button>
+          <button type="button" id="sendEndBtn" class="secondary">Send &amp; End</button>
+        </div>
+      </div>
+    </aside>
+  </main>
+  <div class="lightbox" id="lightbox" hidden>
+    <img id="lightboxImg" src="" alt="" />
+  </div>
+</div>
+<script type="module" src="/chrome.js"></script>
+</body>
+</html>

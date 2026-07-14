@@ -6,12 +6,27 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+
+import { listPlans, getPlan, listShots, addShot, timeline as brainTimeline } from "../lib/review/brain-data.js";
+import { sessionKey, stateDir, listSessions } from "../lib/review/store.js";
 
 const BIN_PATH = fileURLToPath(import.meta.url);
 const DESCRIPTION =
   "Query and update the .brain agent harness (features, progress, docs, runs) in the current repo";
+const OWN_VERSION = readOwnVersion();
+const REVIEW_DEFAULT_PORT = 4517;
+const SERVER_PATH = fileURLToPath(new URL("../lib/review/server.js", import.meta.url));
+
+function readOwnVersion() {
+  try {
+    const pkgPath = fileURLToPath(new URL("../package.json", import.meta.url));
+    return JSON.parse(fs.readFileSync(pkgPath, "utf8")).version;
+  } catch {
+    return "0.0.0";
+  }
+}
 
 // ---------------------------------------------------------------------------
 // TOON serialization (toonformat.dev)
@@ -318,6 +333,7 @@ function cmdHome(argv) {
       "Run `brain progress` to see the latest session checkpoint in full",
       "Run `brain docs` to browse rules, recipes, and architecture docs",
       "Run `brain search \"<query>\"` to find text anywhere in the brain",
+      "Run `brain review <plan.html>` to open a human review session",
       "Run `brain setup --app claude` to install a session-start context hook",
     ])
   );
@@ -815,6 +831,547 @@ function cmdContext(argv) {
 }
 
 // ---------------------------------------------------------------------------
+// Review — human-in-the-loop plan review (server.js owns the HTTP surface;
+// the CLI only talks to it over loopback HTTP + reads store.js directly for
+// `review list`, which needs no running server).
+// ---------------------------------------------------------------------------
+
+function resolveReviewPort(flags) {
+  if (flags.port !== undefined) {
+    const n = parseInt(flags.port, 10);
+    if (!Number.isInteger(n) || n < 1) usageError(`invalid --port "${flags.port}"`, ["--port takes a positive integer"]);
+    return n;
+  }
+  if (process.env.BRAIN_AXI_PORT) {
+    const n = parseInt(process.env.BRAIN_AXI_PORT, 10);
+    if (Number.isInteger(n) && n > 0) return n;
+  }
+  return REVIEW_DEFAULT_PORT;
+}
+
+async function fetchHealth(port, timeoutMs = 1500) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/health`, { signal: controller.signal });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function waitForHealth(port, capMs = 5000) {
+  const start = Date.now();
+  for (;;) {
+    const h = await fetchHealth(port, 800);
+    if (h) return h;
+    if (Date.now() - start >= capMs) return null;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
+async function waitForPortFree(port, capMs = 5000) {
+  const start = Date.now();
+  for (;;) {
+    const h = await fetchHealth(port, 500);
+    if (!h) return true;
+    if (Date.now() - start >= capMs) return false;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
+function spawnReviewServer(port) {
+  const dir = stateDir();
+  const fd = fs.openSync(path.join(dir, "server.log"), "a");
+  const child = spawn(process.execPath, [SERVER_PATH], {
+    env: { ...process.env, BRAIN_AXI_PORT: String(port) },
+    detached: true,
+    stdio: ["ignore", fd, fd],
+  });
+  child.on("error", () => {}); // never crash the CLI over a spawn failure; health polling reports it
+  child.unref();
+  fs.closeSync(fd);
+}
+
+// Ensures a live, version-matched server is listening on `port`, spawning
+// (and respawning on a version mismatch) as needed.
+async function ensureReviewServer(port) {
+  let health = await fetchHealth(port);
+  if (!health) {
+    spawnReviewServer(port);
+    health = await waitForHealth(port);
+    if (!health)
+      opError(`could not start the review server on port ${port}`, [
+        `Check ${collapseHome(path.join(stateDir(), "server.log"))} for details`,
+        "Try a different port: brain review <html-file> --port <n>",
+      ]);
+  }
+  if (health.version !== OWN_VERSION) {
+    await fetch(`http://127.0.0.1:${port}/shutdown`, { method: "POST" }).catch(() => {});
+    await waitForPortFree(port);
+    spawnReviewServer(port);
+    health = await waitForHealth(port);
+    if (!health)
+      opError(`could not restart the review server on port ${port} after a version mismatch`, [
+        `Check ${collapseHome(path.join(stateDir(), "server.log"))} for details`,
+      ]);
+  }
+  return health;
+}
+
+function cmdReview(argv) {
+  const sub = argv[0];
+  if (sub === "poll") return cmdReviewPoll(argv.slice(1));
+  if (sub === "end") return cmdReviewEnd(argv.slice(1));
+  if (sub === "list") return cmdReviewList(argv.slice(1));
+  return cmdReviewOpen(argv);
+}
+
+function cmdReviewOpen(argv) {
+  const spec = {
+    "--no-open": { value: false, desc: "do not open the system browser" },
+    "--reopen": { value: false, desc: "resume a session the user ended (bypasses the user-end latch)" },
+    "--plan": { value: true, desc: "plan slug to associate (default: derived from filename + today's date)" },
+    "--port": { value: true, desc: `review server port (default: ${REVIEW_DEFAULT_PORT} or BRAIN_AXI_PORT)` },
+  };
+  const { flags, positionals } = parseArgs(argv, spec, "review");
+  if (flags.help)
+    helpBlock(
+      "review",
+      "Open a human review session for a plan artifact in the browser",
+      spec,
+      [
+        "brain review plan.html",
+        "brain review plan.html --plan auth-refactor",
+        "brain review plan.html --reopen",
+      ],
+      ["<html-file> — plan artifact (HTML) to review"]
+    );
+  const file = positionals[0];
+  if (!file) usageError("missing required argument <html-file>", ["brain review <html-file>"]);
+  const absFile = path.resolve(file);
+  if (!fs.existsSync(absFile)) opError(`no such file: ${file}`, ["Pass the path to an existing HTML plan artifact"]);
+  return reviewOpenAsync(file, absFile, flags);
+}
+
+async function reviewOpenAsync(file, absFile, flags) {
+  const port = resolveReviewPort(flags);
+  await ensureReviewServer(port);
+
+  let data;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/open`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: absFile, plan: flags.plan, reopen: !!flags.reopen }),
+    });
+    data = await res.json();
+  } catch (e) {
+    opError(`could not reach the review server: ${e.message}`, [`Try again: brain review ${file}`]);
+  }
+
+  if (data.refused) {
+    print([
+      `refused: ${data.reason}`,
+      ...(data.url ? [kv("url", data.url)] : []),
+      ...toonList("help", [`Run \`brain review ${file} --reopen\` to resume the ended session`]),
+    ]);
+    return;
+  }
+
+  print([
+    "session:",
+    kv("key", data.key, 2),
+    kv("url", data.url, 2),
+    kv("plan", data.plan, 2),
+    kv("status", data.status, 2),
+    ...toonList("help", [
+      `Run \`brain review poll ${file}\` and leave it running to wait for feedback`,
+      `Run \`brain review end ${file}\` once the plan is fully approved`,
+      "Annotate elements or leave a message in the browser, then poll for the result",
+    ]),
+  ]);
+
+  if (!flags["no-open"]) {
+    try {
+      const opener = process.platform === "darwin" ? "open" : "xdg-open";
+      const child = spawn(opener, [data.url], { detached: true, stdio: "ignore" });
+      child.on("error", () => {}); // never fail the command if the browser can't be opened
+      child.unref();
+    } catch {
+      // same: opening the browser is best-effort
+    }
+  }
+}
+
+function cmdReviewPoll(argv) {
+  const spec = {
+    "--agent-reply": { value: true, desc: "reply text to post into the browser chat before waiting" },
+    "--timeout-ms": { value: true, desc: "abort the long-poll after N ms (debug)" },
+  };
+  const { flags, positionals } = parseArgs(argv, spec, "review poll");
+  if (flags.help)
+    helpBlock(
+      "review poll",
+      "Long-poll for feedback on an open review session; leave this running until it returns",
+      spec,
+      [
+        "brain review poll plan.html",
+        'brain review poll plan.html --agent-reply "moved the CTA above the fold"',
+      ],
+      ["<html-file> — plan artifact passed to `brain review`"]
+    );
+  const file = positionals[0];
+  if (!file) usageError("missing required argument <html-file>", ["brain review poll <html-file>"]);
+  let timeoutMs = null;
+  if (flags["timeout-ms"] !== undefined) {
+    timeoutMs = parseInt(flags["timeout-ms"], 10);
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1)
+      usageError(`invalid --timeout-ms "${flags["timeout-ms"]}"`, ["--timeout-ms takes a positive integer"]);
+  }
+  return reviewPollAsync(file, flags, timeoutMs);
+}
+
+function renderPollResult(data, file) {
+  const lines = [kv("status", data.status)];
+  if (data.status === "feedback") {
+    const prompts = (data.prompts || []).map((p) => ({
+      tag: p.tag,
+      selector: p.selector || "",
+      text: p.text || "",
+      prompt: p.prompt || "",
+    }));
+    lines.push(...toonTable("prompts", prompts, ["tag", "selector", "text", "prompt"]));
+  }
+  if (data.ended_by) lines.push(kv("ended_by", data.ended_by));
+  if (data.next_step) lines.push(kv("next_step", data.next_step));
+
+  const help = [];
+  if (data.status === "feedback" && !data.session_ended) {
+    help.push(`Apply the changes, then run \`brain review poll ${file} --agent-reply "what you changed"\` to continue the loop`);
+    help.push(`Run \`brain review end ${file}\` once the plan is fully approved`);
+  } else if (data.session_ended || data.status === "ended") {
+    if (data.ended_by === "user") {
+      help.push("Apply any remaining feedback, then report in the conversation — do not reopen automatically");
+      help.push(`Run \`brain review ${file} --reopen\` only if the user asks to resume`);
+    } else {
+      help.push(`Run \`brain review ${file}\` to reopen the session anytime`);
+    }
+  } else {
+    help.push(`Run \`brain review ${file}\` first`);
+  }
+  lines.push(...toonList("help", help));
+  return lines;
+}
+
+async function reviewPollAsync(file, flags, timeoutMs) {
+  const absFile = path.resolve(file);
+  const port = resolveReviewPort(flags);
+
+  let key;
+  try {
+    key = sessionKey(absFile);
+  } catch {
+    print(renderPollResult({ status: "missing", next_step: `No session for this file. Run \`brain review ${file}\` first.` }, file));
+    return;
+  }
+
+  const sigintHandler = () => {
+    process.stderr.write("feedback is never lost — re-run the same command to keep waiting\n");
+    process.exit(130);
+  };
+  process.on("SIGINT", sigintHandler);
+  process.stderr.write("waiting for feedback… leave this running (Ctrl-C safe: feedback is never lost)\n");
+
+  const controller = new AbortController();
+  const timer = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : null;
+
+  let url = `http://127.0.0.1:${port}/api/poll?key=${encodeURIComponent(key)}`;
+  if (flags["agent-reply"]) url += `&reply=${encodeURIComponent(flags["agent-reply"])}`;
+
+  let text;
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    text = (await res.text()).trim();
+  } catch (e) {
+    if (timer) clearTimeout(timer);
+    process.removeListener("SIGINT", sigintHandler);
+    if (e.name === "AbortError") {
+      print([kv("status", "timeout"), ...toonList("help", [`Run \`brain review poll ${file}\` again to keep waiting`])]);
+      return;
+    }
+    print(renderPollResult({ status: "missing", next_step: `No session for this file. Run \`brain review ${file}\` first.` }, file));
+    return;
+  }
+  if (timer) clearTimeout(timer);
+  process.removeListener("SIGINT", sigintHandler);
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    opError("received a malformed response from the review server", [`Run \`brain review poll ${file}\` again`]);
+  }
+  print(renderPollResult(data, file));
+}
+
+function cmdReviewEnd(argv) {
+  const { flags, positionals } = parseArgs(argv, {}, "review end");
+  if (flags.help)
+    helpBlock("review end", "End an open review session (marks the plan reviewed)", {}, ["brain review end plan.html"], [
+      "<html-file> — plan artifact passed to `brain review`",
+    ]);
+  const file = positionals[0];
+  if (!file) usageError("missing required argument <html-file>", ["brain review end <html-file>"]);
+  return reviewEndAsync(file, flags);
+}
+
+async function reviewEndAsync(file, flags) {
+  const port = resolveReviewPort(flags);
+  let key;
+  try {
+    key = sessionKey(path.resolve(file));
+  } catch {
+    print([`review: no active session for ${file} (no-op)`]);
+    return;
+  }
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/end`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key, by: "agent" }),
+    });
+    const data = await res.json();
+    print([
+      "review:",
+      kv("file", file, 2),
+      kv("status", data.status || "ended", 2),
+      ...toonList("help", [`Run \`brain review ${file}\` to reopen the session anytime`]),
+    ]);
+  } catch {
+    print([`review: no active session for ${file} (no-op)`]);
+  }
+}
+
+function cmdReviewList(argv) {
+  const { flags } = parseArgs(argv, {}, "review list");
+  if (flags.help) helpBlock("review list", "List review sessions from the local session store", {}, ["brain review list"]);
+  let sessions;
+  try {
+    sessions = listSessions();
+  } catch {
+    sessions = [];
+  }
+  if (!sessions.length) {
+    print([
+      "sessions: 0 review sessions found",
+      ...toonList("help", ["Run `brain review <html-file>` to start one"]),
+    ]);
+    return;
+  }
+  const rows = sessions.map((s) => ({ key: s.key, status: s.status, plan: s.plan || "", file: s.file }));
+  print([
+    ...toonTable("sessions", rows, ["key", "status", "plan", "file"]),
+    ...toonList("help", ["Run `brain review poll <html-file>` to wait for feedback on one of these"]),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// Plans — brain-recorded plan review history
+// ---------------------------------------------------------------------------
+
+function cmdPlans(argv) {
+  const sub = argv[0] && !argv[0].startsWith("--") ? argv[0] : "list";
+  const rest = sub === argv[0] ? argv.slice(1) : argv;
+  if (sub === "list") return cmdPlansList(rest);
+  if (sub === "view") return cmdPlansView(rest);
+  usageError(`unknown subcommand \`plans ${sub}\``, ["valid subcommands: list (default), view <slug>"]);
+}
+
+function cmdPlansList(argv) {
+  const { flags } = parseArgs(argv, {}, "plans");
+  if (flags.help)
+    helpBlock("plans", "List plan review artifacts tracked in this brain", {}, [
+      "brain plans",
+      "brain plans view <slug>",
+    ]);
+  const brain = findBrain(flags.brain);
+  const plans = listPlans(brain);
+  if (!plans.length) {
+    print([
+      "plans: 0 plans in this brain",
+      ...toonList("help", ["Run `brain review <plan.html>` to start the first plan review"]),
+    ]);
+    return;
+  }
+  print([
+    ...toonTable("plans", plans, ["slug", "title", "status", "rounds"]),
+    ...toonList("help", ["Run `brain plans view <slug>` for review rounds and prompts"]),
+  ]);
+}
+
+function truncateField(s, limit) {
+  if (!s || s.length <= limit) return s || "";
+  return s.slice(0, limit) + ` ... (${s.length} chars total, use --full)`;
+}
+
+function cmdPlansView(argv) {
+  const spec = { "--full": { value: false, desc: "show every review round with complete prompt text" } };
+  const { flags, positionals } = parseArgs(argv, spec, "plans view");
+  if (flags.help)
+    helpBlock(
+      "plans view",
+      "Show one plan's meta plus its recent review rounds",
+      spec,
+      ["brain plans view 2026-07-13-auth-refactor", "brain plans view 2026-07-13-auth-refactor --full"],
+      ["<slug> — plan slug from `brain plans`"]
+    );
+  const slug = positionals[0];
+  if (!slug) usageError("missing required argument <slug>", ["brain plans view <slug>  (see `brain plans`)"]);
+  const brain = findBrain(flags.brain);
+  const plan = getPlan(brain, slug);
+  if (!plan) opError(`no plan "${slug}"`, [`known plans: ${listPlans(brain).map((p) => p.slug).join(", ") || "(none)"}`]);
+
+  const lines = [
+    "plan:",
+    kv("slug", plan.slug, 2),
+    kv("title", plan.title, 2),
+    kv("status", plan.status, 2),
+    kv("rounds", plan.rounds, 2),
+    kv("created", plan.created, 2),
+    kv("updated", plan.updated, 2),
+    kv("file", plan.file, 2),
+  ];
+
+  const allRounds = plan.reviews || [];
+  const shownRounds = flags.full ? allRounds : allRounds.slice(-5);
+  if (shownRounds.length) {
+    for (const r of [...shownRounds].reverse()) {
+      lines.push(`round ${r.round} (${r.at}${r.ended_by ? `, ended by ${r.ended_by}` : ""}):`);
+      const prompts = (r.prompts || []).map((p) => ({
+        tag: p.tag,
+        selector: p.selector || "",
+        text: p.text || "",
+        prompt: flags.full ? p.prompt || "" : truncateField(p.prompt || "", 200),
+      }));
+      lines.push(...toonTable("prompts", prompts, ["tag", "selector", "text", "prompt"], 2));
+    }
+  } else {
+    lines.push("rounds: 0 review rounds recorded yet");
+  }
+
+  const help = [];
+  if (!flags.full && allRounds.length > shownRounds.length)
+    help.push(`Run \`brain plans view ${slug} --full\` for all ${allRounds.length} rounds with complete prompt text`);
+  help.push(`Run \`brain review ${plan.file}\` to open or resume this plan`);
+  lines.push(...toonList("help", help));
+  print(lines);
+}
+
+// ---------------------------------------------------------------------------
+// Shots — review screenshot gallery
+// ---------------------------------------------------------------------------
+
+function cmdShots(argv) {
+  const sub = argv[0] && !argv[0].startsWith("--") ? argv[0] : null;
+  if (sub === "add") return cmdShotsAdd(argv.slice(1));
+  return cmdShotsList(argv);
+}
+
+function cmdShotsList(argv) {
+  const { flags, positionals } = parseArgs(argv, {}, "shots");
+  if (flags.help)
+    helpBlock(
+      "shots",
+      "List review screenshots stored in the brain",
+      {},
+      ["brain shots", "brain shots auth-refactor", "brain shots add ./screenshot.png --scope auth-refactor"],
+      ["[scope] — optional plan/feature scope to filter by"]
+    );
+  const scope = positionals[0];
+  const brain = findBrain(flags.brain);
+  const shots = listShots(brain, scope);
+  if (!shots.length) {
+    print([
+      `shots: 0 screenshots${scope ? ` in scope ${scope}` : ""} in this brain`,
+      ...toonList("help", ["Run `brain shots add <img> --scope <plan-or-feature>` to add one"]),
+    ]);
+    return;
+  }
+  print([
+    ...toonTable("shots", shots, ["scope", "file", "rel", "caption"]),
+    ...toonList("help", ["Run `brain plans view <slug>` or `brain review <plan.html>` to see shots alongside a plan"]),
+  ]);
+}
+
+const SHOT_EXTS = [".png", ".jpg", ".jpeg", ".gif", ".webp"];
+
+function cmdShotsAdd(argv) {
+  const spec = {
+    "--scope": { value: true, desc: "plan slug or feature slug to file this screenshot under (required)" },
+    "--caption": { value: true, desc: "optional caption text" },
+  };
+  const { flags, positionals } = parseArgs(argv, spec, "shots add");
+  if (flags.help)
+    helpBlock(
+      "shots add",
+      "Copy a screenshot into the brain's screenshots/ tree",
+      spec,
+      ["brain shots add ./before.png --scope auth-refactor", 'brain shots add ./after.png --scope auth-refactor --caption "after fix"'],
+      ["<img> — path to a png/jpg/jpeg/gif/webp file"]
+    );
+  const img = positionals[0];
+  if (!img) usageError("missing required argument <img>", ["brain shots add <img> --scope <plan-or-feature>"]);
+  if (!flags.scope) usageError("--scope is required", [`brain shots add ${img} --scope <plan-or-feature>`]);
+  const ext = path.extname(img).toLowerCase();
+  if (!SHOT_EXTS.includes(ext)) usageError(`unsupported image extension "${ext}"`, [`valid extensions: ${SHOT_EXTS.join(", ")}`]);
+  if (!fs.existsSync(img)) opError(`no such file: ${img}`, ["Pass the path to an existing screenshot file"]);
+
+  const brain = findBrain(flags.brain);
+  const { rel } = addShot(brain, img, { scope: flags.scope, caption: flags.caption });
+  print([
+    "shot:",
+    kv("rel", rel, 2),
+    kv("scope", flags.scope, 2),
+    ...toonList("help", ["Run `brain shots` to see all screenshots", `Run \`brain shots ${flags.scope}\` to see this scope`]),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// Timeline — merged brain history
+// ---------------------------------------------------------------------------
+
+function cmdTimeline(argv) {
+  const spec = { "--limit": { value: true, desc: "max entries to show (default: 30)" } };
+  const { flags } = parseArgs(argv, spec, "timeline");
+  if (flags.help)
+    helpBlock("timeline", "Merged brain timeline: checkpoints, run notes, plan creations, review rounds", spec, [
+      "brain timeline",
+      "brain timeline --limit 50",
+    ]);
+  const limit = flags.limit ? parseInt(flags.limit, 10) : 30;
+  if (!Number.isInteger(limit) || limit < 1) usageError(`invalid --limit "${flags.limit}"`, ["--limit takes a positive integer"]);
+  const brain = findBrain(flags.brain);
+  const entries = brainTimeline(brain, { limit });
+  if (!entries.length) {
+    print([
+      "timeline: 0 entries in this brain",
+      ...toonList("help", [
+        'Run `brain progress add --summary "..."` or `brain review <plan.html>` to start recording history',
+      ]),
+    ]);
+    return;
+  }
+  print([
+    ...toonTable("timeline", entries, ["at", "type", "summary", "ref"]),
+    ...toonList("help", ["Run `brain progress` or `brain plans view <slug>` for more detail on any entry"]),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
 // Setup — session hook installation (explicit opt-in, idempotent, path repair)
 // ---------------------------------------------------------------------------
 
@@ -955,7 +1512,7 @@ function skillContent() {
   // Static by design: strips live state, uses npx-runnable command forms.
   return `---
 name: brain
-description: Query and update a repo's .brain agent harness (features, progress checkpoints, rules, recipes, run notes). Use when working in a repo with a .brain directory — before starting a task (read state), during (search docs/rules), and after (checkpoint progress, flip feature status).
+description: Query and update a repo's .brain agent harness (features, progress checkpoints, rules, recipes, run notes, human plan reviews). Use when working in a repo with a .brain directory — before starting a task (read state), during (search docs/rules), and after (checkpoint progress, flip feature status). ALSO use whenever the user asks for a plan, proposal, design, or review of an approach: write the plan as an HTML artifact and open an interactive brain review session in their browser instead of printing the plan in chat.
 ---
 
 # brain — .brain harness CLI
@@ -979,6 +1536,40 @@ All commands print TOON-structured output. Run from anywhere inside the repo; th
 
 - \`brain progress add --summary "..." --next "..."\` — append a session checkpoint
 - \`brain features set-status <slug> --status <planned|in-progress|shipped|blocked|cut>\` — flip feature state (enforces one-in-progress policy)
+
+## Plan review (human-in-the-loop) — the DEFAULT for plans and approvals
+
+When the user asks for a plan, proposal, design, or a review of an approach, do NOT
+print the plan in chat and do NOT stop after writing a markdown file. Run this flow,
+in order, in the current turn:
+
+1. **Read the brain first** — \`brain progress\`, \`brain features\`, \`brain plans\`,
+   \`brain timeline\`. Weave what you find into the plan (cite prior plans, decisions,
+   in-progress feature, relevant rules).
+2. **Write the plan as ONE standalone HTML file** (inline CSS, no CDN links, no build
+   step — it must render opened directly). Any path works; \`<repo>/plans/<topic>.html\`
+   is a good default.
+3. **\`npx -y brain-axi review <plan.html>\`** — this pops the review UI in the user's
+   browser. The UI shows your plan beside brain memory panels (past plans, timeline,
+   screenshots), so the human reviews with full context.
+4. **Immediately run \`npx -y brain-axi review poll <plan.html>\` and wait for it in the
+   foreground of this same turn.** It blocks until the human annotates and clicks Send —
+   that is the point. Do not background-and-forget it, do not skip it, do not end your
+   turn while it waits. If it gets interrupted or times out, re-run the same command:
+   feedback is never lost.
+5. When the poll returns prompts, apply each requested change to the SAME html file
+   (the browser hot-reloads it), then
+   \`npx -y brain-axi review poll <plan.html> --agent-reply "what you changed"\`
+   and wait again.
+6. Repeat step 5 until the plan is approved or the session ends.
+
+Rules:
+
+- If a poll response shows \`ended_by: user\` (or \`next_step\` says the user ended it): **stop polling, do not reopen the browser**, apply any remaining feedback, and report the outcome in the conversation. Only reopen with \`review <plan.html> --reopen\` if the user explicitly asks to resume.
+- \`npx -y brain-axi review end <plan.html>\` — end the session yourself once the plan is fully approved
+- \`npx -y brain-axi shots add <img> --scope <plan-or-feature>\` — attach a screenshot to a plan or feature
+- \`npx -y brain-axi plans\` / \`plans view <slug>\` — see past plan artifacts and their review rounds
+- \`npx -y brain-axi timeline\` — merged history across checkpoints, run notes, and plan reviews
 
 Every command supports \`--help\`. Errors print an \`error:\` line plus a \`help:\` line with the corrected command.
 `;
@@ -1039,6 +1630,10 @@ const COMMANDS = {
   context: cmdContext,
   setup: cmdSetup,
   skill: cmdSkill,
+  review: cmdReview,
+  plans: cmdPlans,
+  shots: cmdShots,
+  timeline: cmdTimeline,
 };
 
 function main() {
@@ -1054,7 +1649,15 @@ function main() {
       "Run `brain` with no arguments for the live dashboard",
     ]);
   }
-  cmd(argv.slice(1));
+  const result = cmd(argv.slice(1));
+  // A few review commands are async (they talk to the review server over
+  // HTTP); catch rejections here so an unexpected failure still reports as a
+  // structured error instead of an unhandled-rejection stack trace.
+  if (result && typeof result.then === "function") {
+    result.catch((e) => {
+      opError(`unexpected error: ${e.message}`, ["Re-run the command; if this persists, check the review server log"]);
+    });
+  }
 }
 
 main();
