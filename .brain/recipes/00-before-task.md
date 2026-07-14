@@ -7,7 +7,7 @@ Run this once at the start of every non-trivial task. Cheap. Stops you from buil
 Answer in one sentence each (write into your run note — see [`../runs/_TEMPLATE.md`](../runs/_TEMPLATE.md)):
 
 - **What is the user actually asking for?** (intent — not the literal words)
-- **What domain / layer?** `<list your layers — see ../rules/index.md>`
+- **What layer?** TOON/AXI output · CLI commands (`bin/brain.js`) · review server (`lib/review/server.js`,`store.js`,`brain-data.js`) · review browser (`chrome.*`,`sdk.js`) — see [`../rules/index.md`](../rules/index.md)
 - **What changes?** code only / brain only / both
 
 If you cannot answer cleanly, ask the user. Do not start.
@@ -30,14 +30,14 @@ If adding code, the matching recipe in [`./index.md`](./index.md) is your spine.
 
 ## 4. Establish baseline
 
-Before editing any file, run the project's typecheck + test commands:
+No typecheck/test/build in this repo. Baseline = run the command(s) you're about to change and capture the current good output:
 
 ```bash
-<typecheck command>
-<test command>
+node bin/brain.js <affected cmd> --brain .brain   # capture exit code + TOON
+node bin/brain.js skill --check                    # should already be 0
 ```
 
-Record both results in your run note. If anything fails *before* your changes, that is pre-existing — note it, do not silently "fix" unrelated breakage.
+Record results in your run note. If `skill --check` already fails *before* your changes, that's pre-existing — note it, don't silently absorb the fix into an unrelated task.
 
 ## 5. Open a run note (optional but encouraged for >30min tasks)
 

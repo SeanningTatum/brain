@@ -9,8 +9,19 @@ import os from "node:os";
 import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { listPlans, getPlan, listShots, addShot, timeline as brainTimeline } from "../lib/review/brain-data.js";
+import {
+  listPlans,
+  getPlan,
+  listShots,
+  addShot,
+  timeline as brainTimeline,
+  listVerifications,
+  getVerification,
+  appendRunStep,
+  brainCheck,
+} from "../lib/review/brain-data.js";
 import { sessionKey, stateDir, listSessions } from "../lib/review/store.js";
+import { PLAYBOOKS } from "../lib/review/playbooks.js";
 
 const BIN_PATH = fileURLToPath(import.meta.url);
 const DESCRIPTION =
@@ -327,6 +338,25 @@ function cmdHome(argv) {
     const top = progress.entries[0];
     lines.push(kv("last-checkpoint", `${top.date} — ${top.summary}`));
   }
+
+  // Phase-1 adoption: surface open review sessions, cheap (reads the local
+  // session store directly, no server round-trip).
+  let sessions = [];
+  try {
+    sessions = listSessions().filter((s) => s.status !== "ended");
+  } catch {
+    sessions = [];
+  }
+  if (sessions.length) {
+    lines.push(
+      ...toonTable(
+        "sessions",
+        sessions.map((s) => ({ key: s.key, status: s.status, plan: s.plan || "", file: s.file })),
+        ["key", "status", "plan", "file"]
+      )
+    );
+  }
+
   lines.push(
     ...toonList("help", [
       "Run `brain features` to list features with status",
@@ -334,6 +364,7 @@ function cmdHome(argv) {
       "Run `brain docs` to browse rules, recipes, and architecture docs",
       "Run `brain search \"<query>\"` to find text anywhere in the brain",
       "Run `brain review <plan.html>` to open a human review session",
+      "Run `brain check` to verify harness invariants",
       "Run `brain setup --app claude` to install a session-start context hook",
     ])
   );
@@ -436,7 +467,16 @@ function cmdFeaturesView(argv) {
   if (feat.dependencies?.length) lines.push(kv("dependencies", feat.dependencies.join(" "), 2));
   if (feat.owners?.length) lines.push(kv("owners", feat.owners.join(" "), 2));
 
-  const docPath = feat.doc ? path.resolve(path.dirname(featureListPath(brain)), "..", "..", feat.doc) : null;
+  let docPath = feat.doc ? path.resolve(path.dirname(featureListPath(brain)), "..", "..", feat.doc) : null;
+  // feature_list.json's doc path may still name either convention (or the
+  // file may have been migrated without updating the tracker) — fall back to
+  // trying the other one before giving up.
+  if (docPath && !fs.existsSync(docPath) && feat.slug) {
+    const perFeature = path.join(brain, "features", feat.slug, `${feat.slug}.md`);
+    const legacyFlat = path.join(brain, "features", `${feat.slug}.md`);
+    if (fs.existsSync(perFeature)) docPath = perFeature;
+    else if (fs.existsSync(legacyFlat)) docPath = legacyFlat;
+  }
   if (docPath && fs.existsSync(docPath)) {
     lines.push(kv("doc", feat.doc, 2));
     lines.push(
@@ -467,6 +507,11 @@ function cmdFeaturesSetStatus(argv) {
   if (!flags.status) usageError("--status is required", [`brain features set-status ${slug} --status <${STATUSES.join("|")}>`]);
   if (!STATUSES.includes(flags.status))
     usageError(`invalid --status "${flags.status}"`, [`valid statuses: ${STATUSES.join(", ")}`]);
+  if (flags.status === "shipped" && (!flags.evidence || !flags.evidence.trim()))
+    usageError("--evidence is required when setting status to shipped", [
+      `brain features set-status ${slug} --status shipped --evidence "..."`,
+      `Or run \`brain ship ${slug} --evidence "..."\` — it also checkpoints and runs \`brain check\``,
+    ]);
 
   const brain = findBrain(flags.brain);
   const list = loadFeatureList(brain);
@@ -504,6 +549,105 @@ function cmdFeaturesSetStatus(argv) {
       "Run `brain progress add --summary \"...\"` to checkpoint this change",
     ]),
   ]);
+}
+
+// ---------------------------------------------------------------------------
+// Check — deterministic brain-harness invariants (brainCheck in brain-data.js)
+// ---------------------------------------------------------------------------
+
+function cmdCheck(argv) {
+  const { flags } = parseArgs(argv, {}, "check");
+  if (flags.help)
+    helpBlock("check", "Run deterministic brain-harness invariant checks (CI-usable: exit 1 on any failure)", {}, [
+      "brain check",
+    ]);
+  const brain = findBrain(flags.brain);
+  const checks = brainCheck(brain);
+  const failed = checks.filter((c) => c.status === "fail");
+  print([
+    ...toonTable("checks", checks, ["check", "status", "detail"]),
+    ...toonList(
+      "help",
+      failed.length
+        ? [`${failed.length} check(s) failing — fix the detail(s) above, then re-run \`brain check\``]
+        : ["All checks passing"]
+    ),
+  ]);
+  if (failed.length) process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// Ship — strict, honest flip to shipped (Addendum v6, v6.4/D4)
+// ---------------------------------------------------------------------------
+
+function cmdShip(argv) {
+  const spec = {
+    "--evidence": { value: true, desc: "evidence string proving the feature works (required)" },
+  };
+  const { flags, positionals } = parseArgs(argv, spec, "ship");
+  if (flags.help)
+    helpBlock(
+      "ship",
+      "Flip a feature to shipped: evidence required, screenshot check, checkpoint, then `brain check`",
+      spec,
+      ['brain ship authentication --evidence "verified 2026-07-14, golden+error path PASS"'],
+      ["<slug> — feature slug from `brain features`"]
+    );
+  const slug = positionals[0];
+  if (!slug) usageError("missing required argument <slug>", ['brain ship <slug> --evidence "..."']);
+  if (!flags.evidence || !flags.evidence.trim())
+    usageError("--evidence is required", [`brain ship ${slug} --evidence "..."`]);
+
+  const brain = findBrain(flags.brain);
+  const list = loadFeatureList(brain);
+  const feat = list.features.find((f) => f.slug === slug || f.id === slug);
+  if (!feat) opError(`no feature "${slug}"`, [`known slugs: ${list.features.map((f) => f.slug).join(", ")}`]);
+
+  if (feat.status === "shipped") {
+    print([
+      `feature: ${feat.slug} already shipped (no-op)`,
+      ...toonList("help", [`Run \`brain features view ${feat.slug}\` to see the recorded evidence`]),
+    ]);
+    return;
+  }
+
+  const previous = feat.status;
+  feat.status = "shipped";
+  feat.evidence = flags.evidence;
+  list.updated = new Date().toISOString().slice(0, 10);
+  fs.writeFileSync(featureListPath(brain), JSON.stringify(list, null, 2) + "\n");
+
+  const lines = ["ship:", kv("slug", feat.slug, 2), kv("previous", previous, 2), kv("status", "shipped", 2)];
+
+  const shots = listShots(brain, feat.slug);
+  if (shots.length === 0) lines.push(`warning: ${feat.slug} has zero screenshots — evidence is unverified visually`);
+
+  const evidenceCapped = flags.evidence.length > 120 ? flags.evidence.slice(0, 120) : flags.evidence;
+  const checkpointResult = appendProgressEntry(brain, { summary: `shipped ${feat.slug}: ${evidenceCapped}` });
+  if (checkpointResult) lines.push(kv("checkpoint", `shipped ${feat.slug}: ${evidenceCapped}`, 2));
+  else lines.push("warning: runs/progress.md not found — checkpoint not recorded");
+
+  const checks = brainCheck(brain);
+  const failed = checks.filter((c) => c.status === "fail");
+  if (failed.length) {
+    lines.push(...toonTable("checks", checks, ["check", "status", "detail"]));
+    lines.push(
+      ...toonList("help", [
+        `${feat.slug} is now shipped (status change was not rolled back) — but ${failed.length} harness check(s) are failing; fix the detail(s) above and re-run \`brain check\``,
+      ])
+    );
+    print(lines);
+    process.exit(1);
+    return;
+  }
+
+  lines.push(
+    ...toonList("help", [
+      `Run \`brain features view ${feat.slug}\` to confirm`,
+      "Run `brain check` anytime to re-verify harness invariants",
+    ])
+  );
+  print(lines);
 }
 
 function cmdProgress(argv) {
@@ -551,6 +695,47 @@ function cmdProgressShow(argv) {
   print(lines);
 }
 
+function resolveBranch(brain, explicit) {
+  if (explicit) return explicit;
+  try {
+    return execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd: path.dirname(brain),
+      stdio: ["ignore", "pipe", "ignore"],
+    }).toString().trim();
+  } catch {
+    return "unknown";
+  }
+}
+
+// Shared by `progress add` and `brain ship`'s internal checkpoint. Returns
+// {date, branch, file} on success, or null when runs/progress.md is missing
+// (callers decide whether that's fatal for them).
+function appendProgressEntry(brain, { summary, branch, feature, runNote, next } = {}) {
+  const progress = parseProgress(brain);
+  if (progress.raw === null) return null;
+
+  const resolvedBranch = resolveBranch(brain, branch);
+  const date = new Date().toISOString().slice(0, 10);
+  const entry = [
+    `## ${date} — ${summary}`,
+    `- branch: \`${resolvedBranch}\``,
+    `- in-progress feature: ${feature || "none"}`,
+    `- run note: ${runNote || "none"}`,
+    ...(next ? [`- next: ${next}`] : []),
+  ].join("\n");
+
+  const sep = progress.raw.match(/\n---+\n/);
+  let updated;
+  if (sep) {
+    const idx = sep.index + sep[0].length;
+    updated = progress.raw.slice(0, idx) + "\n" + entry + "\n\n---\n" + progress.raw.slice(idx);
+  } else {
+    updated = progress.raw.trimEnd() + "\n\n---\n\n" + entry + "\n";
+  }
+  fs.writeFileSync(progress.path, updated);
+  return { date, branch: resolvedBranch, file: progress.path };
+}
+
 function cmdProgressAdd(argv) {
   const spec = {
     "--summary": { value: true, desc: "one-line checkpoint summary (required)" },
@@ -568,47 +753,22 @@ function cmdProgressAdd(argv) {
     usageError("--summary is required", ['brain progress add --summary "..." [--branch ...] [--next ...]']);
 
   const brain = findBrain(flags.brain);
-  const progress = parseProgress(brain);
-  if (progress.raw === null)
+  const result = appendProgressEntry(brain, {
+    summary: flags.summary,
+    branch: flags.branch,
+    feature: flags.feature,
+    runNote: flags["run-note"],
+    next: flags.next,
+  });
+  if (!result)
     opError("runs/progress.md not found in this brain", ["Create runs/progress.md first (see HARNESS.md state layer)"]);
-
-  let branch = flags.branch;
-  if (!branch) {
-    try {
-      branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-        cwd: path.dirname(brain),
-        stdio: ["ignore", "pipe", "ignore"],
-      }).toString().trim();
-    } catch {
-      branch = "unknown";
-    }
-  }
-
-  const date = new Date().toISOString().slice(0, 10);
-  const entry = [
-    `## ${date} — ${flags.summary}`,
-    `- branch: \`${branch}\``,
-    `- in-progress feature: ${flags.feature || "none"}`,
-    `- run note: ${flags["run-note"] || "none"}`,
-    ...(flags.next ? [`- next: ${flags.next}`] : []),
-  ].join("\n");
-
-  const sep = progress.raw.match(/\n---+\n/);
-  let updated;
-  if (sep) {
-    const idx = sep.index + sep[0].length;
-    updated = progress.raw.slice(0, idx) + "\n" + entry + "\n\n---\n" + progress.raw.slice(idx);
-  } else {
-    updated = progress.raw.trimEnd() + "\n\n---\n\n" + entry + "\n";
-  }
-  fs.writeFileSync(progress.path, updated);
 
   print([
     "checkpoint:",
-    kv("date", date, 2),
+    kv("date", result.date, 2),
     kv("summary", flags.summary, 2),
-    kv("branch", branch, 2),
-    kv("file", path.relative(process.cwd(), progress.path), 2),
+    kv("branch", result.branch, 2),
+    kv("file", path.relative(process.cwd(), result.file), 2),
   ]);
 }
 
@@ -659,7 +819,51 @@ function cmdRuns(argv) {
     ]);
     return;
   }
-  usageError(`unknown subcommand \`runs ${sub}\``, ["valid subcommands: list (default), view <name>"]);
+  if (sub === "append") return cmdRunsAppend(rest);
+  usageError(`unknown subcommand \`runs ${sub}\``, ["valid subcommands: list (default), view <name>, append <feature>"]);
+}
+
+function cmdRunsAppend(argv) {
+  const spec = {
+    "--step": { value: true, desc: "step name/title (required)" },
+    "--observed": { value: true, desc: "verbatim observed output for this step (required)" },
+    "--note": { value: true, desc: "run note filename, no extension (default: YYYY-MM-DD-progress)" },
+  };
+  const { flags, positionals } = parseArgs(argv, spec, "runs append");
+  if (flags.help)
+    helpBlock(
+      "runs append",
+      "Append a verbatim step to a feature's run note (deep execution state, not the rolling progress.md cursor)",
+      spec,
+      ['brain runs append authentication --step "ran playwright golden path" --observed "$(cat out.txt)"'],
+      ["<feature> — feature slug"]
+    );
+  const feature = positionals[0];
+  if (!feature)
+    usageError("missing required argument <feature>", ['brain runs append <feature> --step "..." --observed "..."']);
+  if (!flags.step) usageError("--step is required", [`brain runs append ${feature} --step "..." --observed "..."`]);
+  if (!flags.observed)
+    usageError("--observed is required", [`brain runs append ${feature} --step "${flags.step}" --observed "..."`]);
+
+  const brain = findBrain(flags.brain);
+  const list = loadFeatureList(brain);
+  const feat = list.features.find((f) => f.slug === feature || f.id === feature);
+  if (!feat) opError(`no feature "${feature}"`, [`known slugs: ${list.features.map((f) => f.slug).join(", ")}`]);
+
+  const { file, stepNumber } = appendRunStep(brain, feat.slug, {
+    note: flags.note,
+    step: flags.step,
+    observed: flags.observed,
+  });
+  print([
+    "run-step:",
+    kv("file", file, 2),
+    kv("step", stepNumber, 2),
+    ...toonList("help", [
+      `If this step produced a visual test, run \`brain shots add <img> --feature ${feat.slug} --step <NN-name>\` (pass or fail)`,
+      `Run \`brain ship ${feat.slug} --evidence "..."\` once the feature is demonstrably working`,
+    ]),
+  ]);
 }
 
 function cmdDocs(argv) {
@@ -935,6 +1139,7 @@ function cmdReviewOpen(argv) {
     "--no-open": { value: false, desc: "do not open the system browser" },
     "--reopen": { value: false, desc: "resume a session the user ended (bypasses the user-end latch)" },
     "--plan": { value: true, desc: "plan slug to associate (default: derived from filename + today's date)" },
+    "--feature": { value: true, desc: "feature slug to bind this plan under (roots it in .brain/features/<slug>/plans/)" },
     "--port": { value: true, desc: `review server port (default: ${REVIEW_DEFAULT_PORT} or BRAIN_AXI_PORT)` },
   };
   const { flags, positionals } = parseArgs(argv, spec, "review");
@@ -946,6 +1151,7 @@ function cmdReviewOpen(argv) {
       [
         "brain review plan.html",
         "brain review plan.html --plan auth-refactor",
+        "brain review plan.html --feature authentication",
         "brain review plan.html --reopen",
       ],
       ["<html-file> — plan artifact (HTML) to review"]
@@ -961,16 +1167,23 @@ async function reviewOpenAsync(file, absFile, flags) {
   const port = resolveReviewPort(flags);
   await ensureReviewServer(port);
 
-  let data;
+  let data, ok;
   try {
     const res = await fetch(`http://127.0.0.1:${port}/api/open`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ file: absFile, plan: flags.plan, reopen: !!flags.reopen }),
+      body: JSON.stringify({ file: absFile, plan: flags.plan, feature: flags.feature, reopen: !!flags.reopen }),
     });
+    ok = res.ok;
     data = await res.json();
   } catch (e) {
     opError(`could not reach the review server: ${e.message}`, [`Try again: brain review ${file}`]);
+  }
+
+  if (!ok) {
+    opError(data.error || "the review server rejected the request", [
+      data.help || `Try again: brain review ${file}`,
+    ]);
   }
 
   if (data.refused) {
@@ -987,6 +1200,7 @@ async function reviewOpenAsync(file, absFile, flags) {
     kv("key", data.key, 2),
     kv("url", data.url, 2),
     kv("plan", data.plan, 2),
+    ...(data.feature ? [kv("feature", data.feature, 2)] : []),
     kv("status", data.status, 2),
     ...toonList("help", [
       `Run \`brain review poll ${file}\` and leave it running to wait for feedback`,
@@ -1010,6 +1224,7 @@ async function reviewOpenAsync(file, absFile, flags) {
 function cmdReviewPoll(argv) {
   const spec = {
     "--agent-reply": { value: true, desc: "reply text to post into the browser chat before waiting" },
+    "--snapshot": { value: false, desc: "print the full DOM outline snapshot (else just snapshot_chars)" },
     "--timeout-ms": { value: true, desc: "abort the long-poll after N ms (debug)" },
   };
   const { flags, positionals } = parseArgs(argv, spec, "review poll");
@@ -1021,6 +1236,7 @@ function cmdReviewPoll(argv) {
       [
         "brain review poll plan.html",
         'brain review poll plan.html --agent-reply "moved the CTA above the fold"',
+        "brain review poll plan.html --snapshot",
       ],
       ["<html-file> — plan artifact passed to `brain review`"]
     );
@@ -1035,27 +1251,63 @@ function cmdReviewPoll(argv) {
   return reviewPollAsync(file, flags, timeoutMs);
 }
 
-function renderPollResult(data, file) {
+const CODEX_NEXT_STEP_SUFFIX =
+  " You appear to be running under Codex: keep this poll attached to the active turn; do not push it to a background task.";
+const ANCHOR_HELP_LINE =
+  "Each prompt carries line + text anchors — apply edits with targeted reads (offset/limit) and anchored replacements; do NOT re-read the whole artifact.";
+
+function isCodexEnv() {
+  return !!(process.env.CODEX_SANDBOX || process.env.CODEX_THREAD_ID);
+}
+
+function renderPollResult(data, file, flags = {}) {
   const lines = [kv("status", data.status)];
+  let snapshotShown = false;
   if (data.status === "feedback") {
     const prompts = (data.prompts || []).map((p) => ({
       tag: p.tag,
+      line: p.line === null || p.line === undefined ? "" : p.line,
       selector: p.selector || "",
       text: p.text || "",
       prompt: p.prompt || "",
     }));
-    lines.push(...toonTable("prompts", prompts, ["tag", "selector", "text", "prompt"]));
+    lines.push(...toonTable("prompts", prompts, ["tag", "line", "selector", "text", "prompt"]));
+
+    if (data.layout_warnings && data.layout_warnings.length) {
+      const rows = data.layout_warnings.map((w) => ({
+        kind: w.kind,
+        selector: w.selector,
+        overflowPx: w.overflowPx,
+        severity: w.severity,
+        persistent: !!w.persistent,
+      }));
+      lines.push(...toonTable("layout_warnings", rows, ["kind", "selector", "overflowPx", "severity", "persistent"]));
+    }
+
+    if (flags.snapshot && data.dom_snapshot) {
+      lines.push("snapshot: |");
+      for (const l of data.dom_snapshot.split("\n")) lines.push("  " + l);
+      snapshotShown = true;
+    } else {
+      const chars = data.dom_snapshot ? data.dom_snapshot.length : data.dom_snapshot_chars || 0;
+      lines.push(kv("snapshot_chars", chars));
+    }
   }
   if (data.ended_by) lines.push(kv("ended_by", data.ended_by));
-  if (data.next_step) lines.push(kv("next_step", data.next_step));
+  let nextStep = data.next_step;
+  if (nextStep && isCodexEnv()) nextStep += CODEX_NEXT_STEP_SUFFIX;
+  if (nextStep) lines.push(kv("next_step", nextStep));
 
   const help = [];
   if (data.status === "feedback" && !data.session_ended) {
     help.push(`Apply the changes, then run \`brain review poll ${file} --agent-reply "what you changed"\` to continue the loop`);
+    if ((data.prompts || []).length) help.push(ANCHOR_HELP_LINE);
+    if (!snapshotShown) help.push(`Run \`brain review poll ${file} --snapshot\` to see the full DOM outline`);
     help.push(`Run \`brain review end ${file}\` once the plan is fully approved`);
   } else if (data.session_ended || data.status === "ended") {
     if (data.ended_by === "user") {
       help.push("Apply any remaining feedback, then report in the conversation — do not reopen automatically");
+      if ((data.prompts || []).length) help.push(ANCHOR_HELP_LINE);
       help.push(`Run \`brain review ${file} --reopen\` only if the user asks to resume`);
     } else {
       help.push(`Run \`brain review ${file}\` to reopen the session anytime`);
@@ -1075,7 +1327,7 @@ async function reviewPollAsync(file, flags, timeoutMs) {
   try {
     key = sessionKey(absFile);
   } catch {
-    print(renderPollResult({ status: "missing", next_step: `No session for this file. Run \`brain review ${file}\` first.` }, file));
+    print(renderPollResult({ status: "missing", next_step: `No session for this file. Run \`brain review ${file}\` first.` }, file, flags));
     return;
   }
 
@@ -1085,6 +1337,13 @@ async function reviewPollAsync(file, flags, timeoutMs) {
   };
   process.on("SIGINT", sigintHandler);
   process.stderr.write("waiting for feedback… leave this running (Ctrl-C safe: feedback is never lost)\n");
+
+  const waitStart = Date.now();
+  const tickTimer = setInterval(() => {
+    const mins = Math.round((Date.now() - waitStart) / 60000);
+    process.stderr.write(`still waiting ${mins}m — leave running\n`);
+  }, 60000);
+  if (tickTimer.unref) tickTimer.unref();
 
   const controller = new AbortController();
   const timer = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : null;
@@ -1098,15 +1357,17 @@ async function reviewPollAsync(file, flags, timeoutMs) {
     text = (await res.text()).trim();
   } catch (e) {
     if (timer) clearTimeout(timer);
+    clearInterval(tickTimer);
     process.removeListener("SIGINT", sigintHandler);
     if (e.name === "AbortError") {
       print([kv("status", "timeout"), ...toonList("help", [`Run \`brain review poll ${file}\` again to keep waiting`])]);
       return;
     }
-    print(renderPollResult({ status: "missing", next_step: `No session for this file. Run \`brain review ${file}\` first.` }, file));
+    print(renderPollResult({ status: "missing", next_step: `No session for this file. Run \`brain review ${file}\` first.` }, file, flags));
     return;
   }
   if (timer) clearTimeout(timer);
+  clearInterval(tickTimer);
   process.removeListener("SIGINT", sigintHandler);
 
   let data;
@@ -1115,7 +1376,7 @@ async function reviewPollAsync(file, flags, timeoutMs) {
   } catch {
     opError("received a malformed response from the review server", [`Run \`brain review poll ${file}\` again`]);
   }
-  print(renderPollResult(data, file));
+  print(renderPollResult(data, file, flags));
 }
 
 function cmdReviewEnd(argv) {
@@ -1207,8 +1468,13 @@ function cmdPlansList(argv) {
     ]);
     return;
   }
+  // Feature column only when at least one plan is feature-bound — keeps the
+  // common (all-legacy) case exactly as before.
+  const hasFeature = plans.some((p) => p.feature);
+  const fields = hasFeature ? ["slug", "feature", "title", "status", "rounds"] : ["slug", "title", "status", "rounds"];
+  const rows = hasFeature ? plans.map((p) => ({ ...p, feature: p.feature || "" })) : plans;
   print([
-    ...toonTable("plans", plans, ["slug", "title", "status", "rounds"]),
+    ...toonTable("plans", rows, fields),
     ...toonList("help", ["Run `brain plans view <slug>` for review rounds and prompts"]),
   ]);
 }
@@ -1239,6 +1505,7 @@ function cmdPlansView(argv) {
     "plan:",
     kv("slug", plan.slug, 2),
     kv("title", plan.title, 2),
+    ...(plan.feature ? [kv("feature", plan.feature, 2)] : []),
     kv("status", plan.status, 2),
     kv("rounds", plan.rounds, 2),
     kv("created", plan.created, 2),
@@ -1286,24 +1553,25 @@ function cmdShotsList(argv) {
   if (flags.help)
     helpBlock(
       "shots",
-      "List review screenshots stored in the brain",
+      "List review screenshots stored in the brain (merged: per-feature + legacy)",
       {},
-      ["brain shots", "brain shots auth-refactor", "brain shots add ./screenshot.png --scope auth-refactor"],
-      ["[scope] — optional plan/feature scope to filter by"]
+      ["brain shots", "brain shots authentication", "brain shots add ./01-signin.png --feature authentication --step 01-signin"],
+      ["[feature] — optional feature slug (or legacy scope name) to filter by"]
     );
-  const scope = positionals[0];
+  const filter = positionals[0];
   const brain = findBrain(flags.brain);
-  const shots = listShots(brain, scope);
+  const shots = listShots(brain, filter);
   if (!shots.length) {
     print([
-      `shots: 0 screenshots${scope ? ` in scope ${scope}` : ""} in this brain`,
-      ...toonList("help", ["Run `brain shots add <img> --scope <plan-or-feature>` to add one"]),
+      `shots: 0 screenshots${filter ? ` for ${filter}` : ""} in this brain`,
+      ...toonList("help", ["Run `brain shots add <img> --feature <slug> --step <NN-name>` to add one"]),
     ]);
     return;
   }
+  const rows = shots.map((s) => ({ feature: s.feature || "", scope: s.scope || "", file: s.file, rel: s.rel, caption: s.caption }));
   print([
-    ...toonTable("shots", shots, ["scope", "file", "rel", "caption"]),
-    ...toonList("help", ["Run `brain plans view <slug>` or `brain review <plan.html>` to see shots alongside a plan"]),
+    ...toonTable("shots", rows, ["feature", "scope", "file", "rel", "caption"]),
+    ...toonList("help", ["Run `brain plans view <slug>` or `brain review <plan.html> --feature <slug>` to see shots alongside a plan"]),
   ]);
 }
 
@@ -1311,32 +1579,114 @@ const SHOT_EXTS = [".png", ".jpg", ".jpeg", ".gif", ".webp"];
 
 function cmdShotsAdd(argv) {
   const spec = {
-    "--scope": { value: true, desc: "plan slug or feature slug to file this screenshot under (required)" },
+    "--feature": { value: true, desc: "feature slug to file this screenshot under (primary form; requires --step)" },
+    "--step": { value: true, desc: "step name, e.g. 01-signin or E1-bad-login — becomes the filename with --feature" },
+    "--scope": { value: true, desc: "legacy: plan/feature scope name — writes .brain/screenshots/<scope>/" },
     "--caption": { value: true, desc: "optional caption text" },
   };
   const { flags, positionals } = parseArgs(argv, spec, "shots add");
   if (flags.help)
     helpBlock(
       "shots add",
-      "Copy a screenshot into the brain's screenshots/ tree",
+      "Copy a screenshot into the brain's per-feature or legacy screenshots tree",
       spec,
-      ["brain shots add ./before.png --scope auth-refactor", 'brain shots add ./after.png --scope auth-refactor --caption "after fix"'],
+      [
+        "brain shots add ./01-signin.png --feature authentication --step 01-signin",
+        "brain shots add ./before.png --scope auth-refactor  (legacy)",
+      ],
       ["<img> — path to a png/jpg/jpeg/gif/webp file"]
     );
   const img = positionals[0];
-  if (!img) usageError("missing required argument <img>", ["brain shots add <img> --scope <plan-or-feature>"]);
-  if (!flags.scope) usageError("--scope is required", [`brain shots add ${img} --scope <plan-or-feature>`]);
+  if (!img)
+    usageError("missing required argument <img>", ["brain shots add <img> --feature <slug> --step <NN-name>"]);
   const ext = path.extname(img).toLowerCase();
   if (!SHOT_EXTS.includes(ext)) usageError(`unsupported image extension "${ext}"`, [`valid extensions: ${SHOT_EXTS.join(", ")}`]);
   if (!fs.existsSync(img)) opError(`no such file: ${img}`, ["Pass the path to an existing screenshot file"]);
 
+  if (!flags.feature && !flags.scope)
+    usageError("either --feature (with --step) or --scope is required", [
+      `brain shots add ${img} --feature <slug> --step <NN-name>`,
+      `brain shots add ${img} --scope <plan-or-feature>  (legacy)`,
+    ]);
+  if (flags.feature && flags.scope)
+    usageError("pass either --feature or --scope, not both", [`brain shots add ${img} --feature ${flags.feature} --step <NN-name>`]);
+  if (flags.feature && !flags.step)
+    usageError("--step is required with --feature", [`brain shots add ${img} --feature ${flags.feature} --step <NN-name>`]);
+
   const brain = findBrain(flags.brain);
-  const { rel } = addShot(brain, img, { scope: flags.scope, caption: flags.caption });
+  const { rel } = addShot(brain, img, { feature: flags.feature, step: flags.step, scope: flags.scope, caption: flags.caption });
+  const scopeLabel = flags.feature || flags.scope;
   print([
     "shot:",
     kv("rel", rel, 2),
-    kv("scope", flags.scope, 2),
-    ...toonList("help", ["Run `brain shots` to see all screenshots", `Run \`brain shots ${flags.scope}\` to see this scope`]),
+    kv(flags.feature ? "feature" : "scope", scopeLabel, 2),
+    ...toonList("help", ["Run `brain shots` to see all screenshots", `Run \`brain shots ${scopeLabel}\` to see this one`]),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// Verifications — feature-verifier browser-walk verdict docs
+// ---------------------------------------------------------------------------
+
+function cmdVerifications(argv) {
+  if (argv[0] === "view") return cmdVerificationsView(argv.slice(1));
+  return cmdVerificationsList(argv);
+}
+
+function cmdVerificationsList(argv) {
+  const { flags, positionals } = parseArgs(argv, {}, "verifications");
+  if (flags.help)
+    helpBlock(
+      "verifications",
+      "List feature verification (browser-walk) verdict docs",
+      {},
+      ["brain verifications", "brain verifications authentication", "brain verifications view authentication 2026-07-14"],
+      ["[feature] — optional feature slug to filter by"]
+    );
+  const feature = positionals[0];
+  const brain = findBrain(flags.brain);
+  const rows = listVerifications(brain, feature);
+  if (!rows.length) {
+    print([
+      `verifications: 0 verification docs${feature ? ` for ${feature}` : ""} in this brain`,
+      ...toonList("help", ["Run `npx -y brain-axi playbook verify` for the verification doc standard"]),
+    ]);
+    return;
+  }
+  print([
+    ...toonTable("verifications", rows, ["feature", "date", "verdict", "file"]),
+    ...toonList("help", ["Run `brain verifications view <feature> <date>` to read one"]),
+  ]);
+}
+
+function cmdVerificationsView(argv) {
+  const spec = { "--full": { value: false, desc: "print the complete verification doc body" } };
+  const { flags, positionals } = parseArgs(argv, spec, "verifications view");
+  if (flags.help)
+    helpBlock(
+      "verifications view",
+      "Show one feature verification doc",
+      spec,
+      ["brain verifications view authentication 2026-07-14", "brain verifications view authentication 2026-07-14 --full"],
+      ["<feature> — feature slug", "<date> — YYYY-MM-DD"]
+    );
+  const [feature, date] = positionals;
+  if (!feature || !date)
+    usageError("missing required arguments <feature> <date>", ["brain verifications view <feature> <date>  (see `brain verifications`)"]);
+  const brain = findBrain(flags.brain);
+  const v = getVerification(brain, feature, date);
+  if (!v)
+    opError(`no verification doc for ${feature}/${date}`, [`Run \`brain verifications ${feature}\` to list known dates`]);
+  print([
+    "verification:",
+    kv("feature", feature, 2),
+    kv("date", date, 2),
+    kv("verdict", v.meta.verdict, 2),
+    kv("file", v.meta.file, 2),
+    ...bodyLines("body", v.body.trim(), {
+      full: !!flags.full,
+      fullCommand: `brain verifications view ${feature} ${date} --full`,
+    }),
   ]);
 }
 
@@ -1368,6 +1718,41 @@ function cmdTimeline(argv) {
   print([
     ...toonTable("timeline", entries, ["at", "type", "summary", "ref"]),
     ...toonList("help", ["Run `brain progress` or `brain plans view <slug>` for more detail on any entry"]),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// Playbook — authoring standards for agent-produced review artifacts
+// ---------------------------------------------------------------------------
+
+function cmdPlaybook(argv) {
+  const { flags, positionals } = parseArgs(argv, {}, "playbook");
+  if (flags.help)
+    helpBlock(
+      "playbook",
+      "Show authoring playbooks for agent-produced artifacts (e.g. the plan review HTML)",
+      {},
+      ["brain playbook", "brain playbook plan"],
+      ["[id] — playbook id from `brain playbook`"]
+    );
+  const id = positionals[0];
+  if (!id) {
+    const rows = Object.values(PLAYBOOKS).map((p) => ({ id: p.id, use_when: p.use_when }));
+    print([
+      ...toonTable("playbooks", rows, ["id", "use_when"]),
+      ...toonList("help", ["Run `brain playbook <id>` to see the full playbook"]),
+    ]);
+    return;
+  }
+  const pb = PLAYBOOKS[id];
+  if (!pb) opError(`no playbook "${id}"`, [`known playbooks: ${Object.keys(PLAYBOOKS).join(", ")}`]);
+  print([
+    "playbook: |",
+    ...pb.content.split("\n").map((l) => "  " + l),
+    ...toonList("help", [
+      "Follow this playbook step by step while writing the artifact",
+      "Run `brain playbook` to see all available playbooks",
+    ]),
   ]);
 }
 
@@ -1466,9 +1851,28 @@ export const BrainContext = async ({ directory }) => ({
   return { path: pluginPath, action: existed ? "path repaired" : "installed" };
 }
 
+function setupCopilot(command) {
+  const hooksPath = path.join(os.homedir(), ".config", "github-copilot", "hooks.json");
+  const config = readJsonSafe(hooksPath);
+  config.hooks = config.hooks || [];
+  for (const hook of config.hooks) {
+    if (hook.event === "SessionStart" && isBrainHookCommand(hook.command)) {
+      if (hook.command === command) return { path: hooksPath, action: "already installed (no-op)" };
+      hook.command = command;
+      fs.mkdirSync(path.dirname(hooksPath), { recursive: true });
+      fs.writeFileSync(hooksPath, JSON.stringify(config, null, 2) + "\n");
+      return { path: hooksPath, action: "path repaired" };
+    }
+  }
+  config.hooks.push({ event: "SessionStart", type: "command", command });
+  fs.mkdirSync(path.dirname(hooksPath), { recursive: true });
+  fs.writeFileSync(hooksPath, JSON.stringify(config, null, 2) + "\n");
+  return { path: hooksPath, action: "installed", note: "best-effort: Copilot CLI hook support/shape may vary by version" };
+}
+
 function cmdSetup(argv) {
   const spec = {
-    "--app": { value: true, desc: "target app: claude | codex | opencode | all (required)" },
+    "--app": { value: true, desc: "target app: claude | codex | opencode | copilot | all (required)" },
   };
   const { flags } = parseArgs(argv, spec, "setup");
   if (flags.help)
@@ -1476,7 +1880,7 @@ function cmdSetup(argv) {
       "brain setup --app claude",
       "brain setup --app all",
     ]);
-  const APPS = ["claude", "codex", "opencode", "all"];
+  const APPS = ["claude", "codex", "opencode", "copilot", "all"];
   if (!flags.app) usageError("--app is required", [`brain setup --app <${APPS.join("|")}>`]);
   if (!APPS.includes(flags.app))
     usageError(`invalid --app "${flags.app}"`, [`valid apps: ${APPS.join(", ")}`]);
@@ -1484,13 +1888,14 @@ function cmdSetup(argv) {
   const brain = findBrain(flags.brain);
   const repoRoot = path.dirname(brain);
   const command = resolveHookCommand();
-  const targets = flags.app === "all" ? ["claude", "codex", "opencode"] : [flags.app];
+  const targets = flags.app === "all" ? ["claude", "codex", "opencode", "copilot"] : [flags.app];
 
   const rows = [];
   for (const app of targets) {
     const r =
       app === "claude" ? setupClaude(repoRoot, command)
       : app === "codex" ? setupCodex(repoRoot, command)
+      : app === "copilot" ? setupCopilot(command)
       : setupOpencode(command);
     rows.push({ app, action: r.action, file: collapseHome(r.path), note: r.note || "" });
   }
@@ -1531,11 +1936,63 @@ All commands print TOON-structured output. Run from anywhere inside the repo; th
 - \`brain search "<query>"\` — find text anywhere in the brain (\`--section rules\` to narrow)
 - \`brain features view <slug>\` — tracker fields + feature doc
 - \`brain runs view <name>\` — deep per-task state (baselines, dead ends, decisions)
+- \`npx -y brain-axi playbook plan\` — the plan artifact standard (structure, decision cards, diagrams)
 
 ## Record state (end of task / checkpoint)
 
 - \`brain progress add --summary "..." --next "..."\` — append a session checkpoint
-- \`brain features set-status <slug> --status <planned|in-progress|shipped|blocked|cut>\` — flip feature state (enforces one-in-progress policy)
+- \`brain features set-status <slug> --status <planned|in-progress|shipped|blocked|cut>\` — flip feature state (enforces one-in-progress policy; \`--status shipped\` requires \`--evidence\`)
+- \`brain check\` — deterministic harness invariants (feature list validity, one-in-progress, doc paths, dependency refs, plan/review file integrity, verification docs); exit 1 on any failure, CI-usable
+- \`brain\` (home) shows an open \`sessions[...]\` table whenever a review session isn't ended yet
+
+## Feature-centric \`.brain/\` layout
+
+Everything about a feature lives in its own folder. Every reader below merges
+this layout with the legacy flat one, so older brains keep working:
+
+\`\`\`
+.brain/features/feature_list.json          tracker (doc paths point at features/<slug>/<slug>.md)
+.brain/features/<slug>/
+  <slug>.md                                feature doc
+  screenshots/NN-<step>.png                golden path (01-, 02-, ...); error paths E1-, E2-, ...
+  verifications/<YYYY-MM-DD>.md            browser-walk verdict docs (PASS/FAIL/BLOCKED evidence)
+  runs/<YYYY-MM-DD>-<task>.md              per-feature run notes
+  plans/<plan-slug>/                       review plans scoped to this feature
+.brain/runs/progress.md                    stays global — rolling session cursor
+.brain/plans/<plan-slug>/                  fallback pool: plans not tied to a feature
+\`\`\`
+
+- \`npx -y brain-axi shots add <img> --feature <slug> --step 01-signin\` — primary
+  form; lands at \`.brain/features/<slug>/screenshots/01-signin.png\`. \`--scope\`
+  still works as a legacy alias.
+- \`brain shots [<feature>]\` — merged list (per-feature + legacy).
+- \`brain review <plan.html> --feature <slug>\` — binds the plan under that
+  feature's \`plans/\` dir instead of the legacy fallback pool.
+
+## Verifications — proof a feature actually works
+
+- \`npx -y brain-axi playbook verify\` — the verification-doc standard: browser
+  walk (golden path + one error path), screenshot naming, the jsErrors/
+  networkErrors console policy, and how to persist the evidence.
+- \`brain verifications [<feature>]\` — list verdict docs (feature, date, verdict).
+- \`brain verifications view <feature> <date>\` — read one in full.
+
+After implementing and testing a user-visible feature, produce a verification
+doc at \`.brain/features/<slug>/verifications/<date>.md\` following
+\`brain playbook verify\` — this is how "it works" becomes checkable evidence
+instead of a claim.
+
+## Execution loop — implementing an approved plan / working a feature to shipped
+
+Run \`npx -y brain-axi playbook execute\` and follow it. Short version: \`features
+set-status <slug> --status in-progress\` → per step \`runs append <slug> --step
+"..." --observed "..."\` (verbatim command output, not a paraphrase) → \`shots add
+--feature <slug> --step NN-name\` on every visual test, pass AND fail → a
+verification doc per \`playbook verify\` → \`brain ship <slug> --evidence "..."\`
+(requires evidence; no-ops if already shipped; warns — does not block — on zero
+screenshots; checkpoints; runs \`brain check\` and reports failures honestly
+without rolling back the ship). \`runs/progress.md\` stays a rolling cursor;
+\`features/<slug>/runs/*.md\` is the deep, verbatim record.
 
 ## Plan review (human-in-the-loop) — the DEFAULT for plans and approvals
 
@@ -1546,9 +2003,12 @@ in order, in the current turn:
 1. **Read the brain first** — \`brain progress\`, \`brain features\`, \`brain plans\`,
    \`brain timeline\`. Weave what you find into the plan (cite prior plans, decisions,
    in-progress feature, relevant rules).
-2. **Write the plan as ONE standalone HTML file** (inline CSS, no CDN links, no build
-   step — it must render opened directly). Any path works; \`<repo>/plans/<topic>.html\`
-   is a good default.
+2. **Run \`npx -y brain-axi playbook plan\` and follow it** to write the plan as ONE
+   standalone HTML file (inline CSS, system fonts, no build step — it must render
+   opened directly). The playbook covers the 11-section structure, decision cards,
+   and diagram options (a CDN-based Mermaid snippet that degrades to readable text
+   offline, or hand-rolled inline SVG for zero network dependency). Any path works;
+   \`<repo>/plans/<topic>.html\` is a good default.
 3. **\`npx -y brain-axi review <plan.html>\`** — this pops the review UI in the user's
    browser. The UI shows your plan beside brain memory panels (past plans, timeline,
    screenshots), so the human reviews with full context.
@@ -1560,16 +2020,21 @@ in order, in the current turn:
 5. When the poll returns prompts, apply each requested change to the SAME html file
    (the browser hot-reloads it), then
    \`npx -y brain-axi review poll <plan.html> --agent-reply "what you changed"\`
-   and wait again.
+   and wait again. Each prompt carries \`line\` + \`text\` anchors (server-resolved
+   against the artifact's current content) — apply edits with targeted reads
+   (offset/limit) and anchored replacements; do NOT re-read the whole artifact
+   just to find what a prompt refers to.
 6. Repeat step 5 until the plan is approved or the session ends.
 
 Rules:
 
 - If a poll response shows \`ended_by: user\` (or \`next_step\` says the user ended it): **stop polling, do not reopen the browser**, apply any remaining feedback, and report the outcome in the conversation. Only reopen with \`review <plan.html> --reopen\` if the user explicitly asks to resume.
+- If a poll response carries \`layout_warnings\`, fix any \`severity: error\` entry and wait for the next poll to confirm a clean audit; if the SAME warning comes back \`persistent: true\`, proceed and mention it to the human instead of looping.
+- A poll's DOM snapshot is a compact outline, not the raw page — it prints as \`snapshot_chars: N\` by default; pass \`--snapshot\` to see the full outline block only when you actually need it.
 - \`npx -y brain-axi review end <plan.html>\` — end the session yourself once the plan is fully approved
-- \`npx -y brain-axi shots add <img> --scope <plan-or-feature>\` — attach a screenshot to a plan or feature
+- \`npx -y brain-axi shots add <img> --feature <slug> --step <NN-name>\` — attach a screenshot to a feature (\`--scope <plan-or-feature>\` is the legacy form)
 - \`npx -y brain-axi plans\` / \`plans view <slug>\` — see past plan artifacts and their review rounds
-- \`npx -y brain-axi timeline\` — merged history across checkpoints, run notes, and plan reviews
+- \`npx -y brain-axi timeline\` — merged history across checkpoints, run notes, plan reviews, and verifications
 
 Every command supports \`--help\`. Errors print an \`error:\` line plus a \`help:\` line with the corrected command.
 `;
@@ -1633,7 +2098,11 @@ const COMMANDS = {
   review: cmdReview,
   plans: cmdPlans,
   shots: cmdShots,
+  verifications: cmdVerifications,
   timeline: cmdTimeline,
+  playbook: cmdPlaybook,
+  check: cmdCheck,
+  ship: cmdShip,
 };
 
 function main() {

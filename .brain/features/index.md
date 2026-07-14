@@ -16,18 +16,19 @@ Per-feature memory. **One MD per shipped or in-progress feature** — captures p
 
 ## Conventions
 
-- Filename: `kebab-case.md` (e.g. `file-upload.md`)
+- Layout: `features/<kebab-slug>/<kebab-slug>.md` (e.g. `features/file-upload/file-upload.md`) — one folder per feature, holding the doc plus `screenshots/`, `verifications/`, `runs/`, and `plans/` for that feature (see `brain-review` docs for the full per-feature tree)
 - Use [`_TEMPLATE.md`](_TEMPLATE.md) as starting point
 - `_Last updated: YYYY-MM-DD_` at top — refresh on every edit
 - `Key Files` table = source of truth for what code belongs to feature
 - `Changelog` table appends newest entry on top
-- Register file in the index table below and in [`feature_list.json`](feature_list.json)
+- Register file in the index table below and in [`feature_list.json`](feature_list.json) (`doc` points at `features/<slug>/<slug>.md`)
 
 ## Files
 
 | Feature | File | Status | Last updated |
 |---------|------|--------|--------------|
-| _none yet_ | | | |
+| Core AXI CLI | [`core-cli/core-cli.md`](core-cli/core-cli.md) | shipped | 2026-07-14 |
+| brain review | [`brain-review/brain-review.md`](brain-review/brain-review.md) | in-progress | 2026-07-14 |
 
 ## Important things to look at
 

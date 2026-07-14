@@ -21,4 +21,11 @@
 
 ---
 
+## 2026-07-14 — Turned .brain onto brain-axi itself: real HARNESS, codebase/programming-model, 4 layer rules, architecture, feat-001 core-cli (shipped) + feat-002 brain-review (in-progress). check 8/8, skill --check green.
+- branch: `main`
+- in-progress feature: none
+- run note: none
+
+---
+
 _No entries yet — append the first checkpoint above this line._
