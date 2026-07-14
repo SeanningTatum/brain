@@ -1,0 +1,21 @@
+{
+  "$schema": "Machine-readable feature state tracker. Source of truth for status; per-feature MD docs are source of truth for design/runtime.",
+  "updated": "YYYY-MM-DD",
+  "policy": {
+    "one_in_progress_at_a_time": true,
+    "definition_of_done": "implementation complete + verify-done passed + feature MD updated + brain coherent"
+  },
+  "features": [
+    {
+      "id": "feat-000",
+      "name": "<Feature Name>",
+      "slug": "<kebab-slug>",
+      "doc": ".brain/features/<kebab-slug>.md",
+      "description": "<one-line what-and-how>",
+      "dependencies": [],
+      "status": "planned",
+      "evidence": "<tests / e2e / manual verification proving it works>",
+      "owners": ["<owner>"]
+    }
+  ]
+}
