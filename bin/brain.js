@@ -1965,6 +1965,11 @@ this layout with the legacy flat one, so older brains keep working:
 - \`npx -y brain-axi shots add <img> --feature <slug> --step 01-signin\` — primary
   form; lands at \`.brain/features/<slug>/screenshots/01-signin.png\`. \`--scope\`
   still works as a legacy alias.
+- Capturing the screenshots is YOUR job, not the CLI's (brain-axi ships no
+  browser automation): scaffold a throwaway Playwright script per
+  \`npx -y brain-axi playbook verify\` (project-pinned playwright, or
+  \`npx -y playwright install chromium\`), screenshot each step, add via
+  \`shots add\`, delete the script.
 - \`brain shots [<feature>]\` — merged list (per-feature + legacy).
 - \`brain review <plan.html> --feature <slug>\` — binds the plan under that
   feature's \`plans/\` dir instead of the legacy fallback pool.
