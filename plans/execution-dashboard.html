@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Execution dashboard — approval → PR</title>
+<style>
+  :root {
+    --bg: #faf9f5; --surface: #ffffff; --fg: #141413; --fg-secondary: #3d3d3a;
+    --muted: #73726c; --border: #dedcd1; --highlight: #fff7ca; --accent: #d97757;
+    --space-2: 8px; --space-3: 16px; --space-4: 24px; --space-6: 40px;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      Helvetica, Arial, sans-serif;
+    font-size: 16px; background: var(--bg); color: var(--fg); line-height: 1.6;
+    max-width: 72ch; margin: 0 auto; padding: var(--space-6) var(--space-4);
+  }
+  h1, h2, h3 {
+    font-family: Charter, "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+    font-weight: 600; line-height: 1.25; color: var(--fg);
+  }
+  h1 { font-size: 1.75em; }
+  h2 { font-size: 1.3em; font-weight: 500; margin-top: var(--space-6);
+    border-bottom: 1px solid var(--border); padding-bottom: var(--space-2); }
+  h3 { font-size: 1.05em; font-weight: 500; }
+  p, li { color: var(--fg-secondary); }
+  mark, .highlight { background: var(--highlight); color: var(--fg); padding: 0 2px; }
+  code { background: var(--surface); border: 1px solid var(--border); border-radius: 4px;
+    padding: 0 4px; font-size: 0.9em; }
+  .chip { display: inline-block; padding: 2px 10px; border-radius: 999px;
+    font-size: 0.8em; font-weight: 600; border: 1px solid var(--border); }
+  .chip-status-draft { background: var(--surface); color: var(--muted); }
+  .decision-card { background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: var(--space-4); margin: var(--space-4) 0; }
+  table { width: 100%; border-collapse: collapse; margin: var(--space-3) 0;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    overflow: hidden; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid
+    var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  .tag-recommended { color: var(--accent); font-weight: 600; }
+  .btn-queue { border: none; border-radius: 10px; padding: 8px 16px; font-weight: 600;
+    cursor: pointer; font-size: 0.95em; background: var(--fg); color: #fff; }
+  .queue-ack { margin-left: var(--space-3); font-size: 0.9em; color: var(--muted); }
+  .checklist { list-style: none; padding: 0; }
+  .checklist li { margin: var(--space-2) 0; }
+  .item-x, .item-restore, .list-add-btn { cursor: pointer; border: 1px solid var(--border);
+    background: var(--surface); border-radius: 6px; font-size: 0.85em; padding: 1px 8px;
+    color: var(--fg-secondary); }
+  [data-item-text] { cursor: text; }
+  .item-removed { opacity: 0.5; }
+  .item-removed [data-item-text] { text-decoration: line-through; }
+  .item-badge { font-size: 0.75em; color: var(--muted); margin-left: 6px; font-style: italic; }
+  .item-badge-proposed { color: var(--accent); }
+  .item-proposed { border-left: 2px dashed var(--accent); padding-left: 6px; }
+  .list-add-row { display: flex; gap: 8px; margin-top: var(--space-2); }
+  .list-add-input { flex: 1; padding: 6px 10px; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--surface); color: var(--fg); }
+  .arch { display: block; margin: var(--space-3) auto; max-width: 100%; }
+  .arch .box { fill: var(--surface); stroke: #3d3d3a; stroke-width: 1.5; rx: 8; }
+  .arch text { fill: #141413; font-size: 13px;
+    font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .arch .lbl { fill: #73726c; font-size: 11px; }
+  .arch .arrow { stroke: #73726c; stroke-width: 1.5; fill: none;
+    marker-end: url(#arrowhead); }
+  .pipeline { display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    margin: var(--space-3) 0; font-size: 0.85em; }
+  .pipeline .stage { border: 1px solid var(--border); background: var(--surface);
+    border-radius: 999px; padding: 3px 12px; color: var(--fg-secondary); }
+  .pipeline .sep { color: var(--muted); }
+</style>
+</head>
+<body>
+
+<!-- 1 · HEADER -->
+<header>
+  <h1>Execution dashboard — approval → PR</h1>
+  <div>
+    <span>2026-07-16</span> ·
+    <span>feature: brain-review</span> ·
+    <span class="chip chip-status-draft">in-review</span> ·
+    <span>round 1 — D1–D4 locked (all recommended)</span>
+  </div>
+</header>
+
+<!-- 2 · TL;DR -->
+<section id="tldr">
+  <h2>TL;DR</h2>
+  <p>Once a plan is approved, the reviewer today loses visibility — execution
+  progress lives in CLI TOON output and a sidebar strip coupled to the (now
+  ended) review session. This plan adds a <strong>standalone live dashboard
+  page</strong> on the existing review server that tracks a feature from plan
+  approval through run steps, screenshots, and verification, ending at a
+  visible <mark>"PR opened"</mark> terminal state. It reuses the server, SSE,
+  file-watchers, and brain-data readers we already have — no new process, no
+  new dependency.</p>
+</section>
+
+<!-- 3 · CONTEXT -->
+<section id="context">
+  <h2>Context</h2>
+  <p>The 2026-07-14 checkpoint closed the harness self-setup loop ("skill
+  --check + brain check 8/8 green"); feature <code>feat-002 brain-review</code>
+  is the sole in-progress feature. The review architecture doc already
+  anticipated this surface twice: <strong>Addendum v3</strong> explicitly
+  banked "a separate surface for browsing all plans and review sessions …
+  possibly merged with the future execution-mode dashboard" as backlog, and
+  <strong>Addendum v6.3 (decision D2)</strong> shipped a minimal execution
+  strip <em>inside</em> the review session sidebar — feature status, health,
+  last checkpoints, verification chips, shot thumbnails.</p>
+  <p>The gap: that strip dies with the session, shows summaries not run-step
+  logs, and has no notion of "done" — nothing marks the moment a PR opens.
+  This plan is the deferred v3 surface, scoped to a single feature's
+  execution lifecycle.</p>
+  <div class="pipeline">
+    <span class="stage">plan approved</span><span class="sep">→</span>
+    <span class="stage">in-progress</span><span class="sep">→</span>
+    <span class="stage">run steps</span><span class="sep">→</span>
+    <span class="stage">verification</span><span class="sep">→</span>
+    <span class="stage">shipped</span><span class="sep">→</span>
+    <span class="stage">PR opened</span>
+  </div>
+</section>
+
+<!-- 4 · BIG PICTURE -->
+<section id="big-picture">
+  <h2>Big picture</h2>
+  <svg class="arch" viewBox="0 0 640 300" role="img"
+       aria-label="Agent CLI writes to .brain files; server reads via brain-data and watches for changes; dashboard page receives SSE updates">
+    <defs>
+      <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+        <path d="M0,0 L8,4 L0,8 z" fill="#73726c"/>
+      </marker>
+    </defs>
+    <!-- agent -->
+    <rect class="box" x="10" y="110" width="130" height="70" rx="8"/>
+    <text x="75" y="140" text-anchor="middle">Agent (CLI)</text>
+    <text class="lbl" x="75" y="158" text-anchor="middle">runs append · shots add</text>
+    <text class="lbl" x="75" y="171" text-anchor="middle">ship · pr</text>
+    <!-- brain -->
+    <rect class="box" x="200" y="90" width="160" height="110" rx="8"/>
+    <text x="280" y="115" text-anchor="middle">.brain/features/&lt;slug&gt;/</text>
+    <text class="lbl" x="280" y="135" text-anchor="middle">runs/*.md (verbatim steps)</text>
+    <text class="lbl" x="280" y="150" text-anchor="middle">verifications/*.md</text>
+    <text class="lbl" x="280" y="165" text-anchor="middle">screenshots/*.png</text>
+    <text class="lbl" x="280" y="180" text-anchor="middle">feature_list.json · pr.json</text>
+    <!-- server -->
+    <rect class="box" x="420" y="30" width="200" height="90" rx="8"/>
+    <text x="520" y="55" text-anchor="middle">review server (:4517)</text>
+    <text class="lbl" x="520" y="75" text-anchor="middle">GET /watch/&lt;feature&gt; (page)</text>
+    <text class="lbl" x="520" y="90" text-anchor="middle">GET /watch/&lt;feature&gt;/context</text>
+    <text class="lbl" x="520" y="105" text-anchor="middle">SSE: context-update</text>
+    <!-- browser -->
+    <rect class="box" x="420" y="180" width="200" height="90" rx="8"/>
+    <text x="520" y="205" text-anchor="middle">dashboard.html (browser)</text>
+    <text class="lbl" x="520" y="225" text-anchor="middle">pipeline · health · steps</text>
+    <text class="lbl" x="520" y="240" text-anchor="middle">verifications · shots</text>
+    <text class="lbl" x="520" y="255" text-anchor="middle">PR terminal card</text>
+    <!-- arrows -->
+    <path class="arrow" d="M140,145 L195,145"/>
+    <text class="lbl" x="168" y="138" text-anchor="middle">writes</text>
+    <path class="arrow" d="M360,120 L415,85"/>
+    <text class="lbl" x="392" y="92" text-anchor="middle">fs.watch + read</text>
+    <path class="arrow" d="M520,120 L520,175"/>
+    <text class="lbl" x="560" y="152" text-anchor="middle">SSE + JSON</text>
+  </svg>
+  <p>Everything left of the server already exists (v6.4 execution verbs +
+  feature-centric layout, v4). The new surface is the two <code>/watch</code>
+  routes, one HTML page, one JS file, and a small PR-record write path.</p>
+</section>
+
+<!-- 5 · DECISIONS -->
+<section id="decisions">
+  <h2>Decisions needed</h2>
+  <p><mark>All four decisions locked in round 1 (2026-07-16), each at the
+  recommended option:</mark> D1 <code>/watch/&lt;feature&gt;</code> route on the
+  existing server · D2 explicit <code>brain pr</code> verb · D3 step accordion ·
+  D4 end-of-session link + <code>brain watch</code> CLI. Cards kept below for
+  the record.</p>
+
+  <div class="decision-card" id="decision-surface" data-brain-action>
+    <p><strong>1. Where does the dashboard live?</strong></p>
+    <p>The review server (127.0.0.1:4517) already has session routes, SSE,
+    file watchers, shot serving, and brainCheck.</p>
+    <table>
+      <thead><tr><th></th><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><input type="radio" name="decision-surface" id="opt-surface-route"
+            value="New /watch/<feature> route on the existing review server" checked data-brain-action></td>
+          <td><label for="opt-surface-route">New <code>/watch/&lt;feature&gt;</code> route on the existing server
+            <span class="tag-recommended">(recommended)</span></label></td>
+          <td>Reuses server lifecycle, SSE, watchers, shot routes, brainCheck; zero new process</td>
+          <td>Dashboard availability tied to server idle-shutdown rules (SSE clients already count as activity)</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-surface" id="opt-surface-chrome"
+            value="Extend the review chrome to morph into an execution view after approval" data-brain-action></td>
+          <td><label for="opt-surface-chrome">Morph the review chrome after approval</label></td>
+          <td>No new page</td>
+          <td>Contradicts v3 direction (sidebar = conversation only); session is <em>ended</em> at approval; couples two lifecycles</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-surface" id="opt-surface-static"
+            value="Separate static page polling the CLI via a new lightweight server" data-brain-action></td>
+          <td><label for="opt-surface-static">Separate static page + its own mini server</label></td>
+          <td>Fully decoupled</td>
+          <td>Duplicates lifecycle/watcher/serving infra; two ports to manage</td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn-queue" data-brain-action
+      onclick="queueDecision('decision-surface', 'Where does the dashboard live?')">
+      Queue answer</button>
+    <span class="queue-ack" id="ack-decision-surface"></span>
+  </div>
+
+  <div class="decision-card" id="decision-pr" data-brain-action>
+    <p><strong>2. How is "PR opened" detected (the terminal state)?</strong></p>
+    <p>The dashboard needs a deterministic end signal. brain-axi is
+    zero-dependency and offline-first.</p>
+    <table>
+      <thead><tr><th></th><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><input type="radio" name="decision-pr" id="opt-pr-verb"
+            value="Explicit CLI verb: brain pr <slug> --url <github-pr-url>" checked data-brain-action></td>
+          <td><label for="opt-pr-verb">Explicit CLI verb <code>brain pr &lt;slug&gt; --url …</code>
+            <span class="tag-recommended">(recommended)</span></label></td>
+          <td>Deterministic, offline, zero-dep; agent already runs <code>gh pr create</code> and has the URL in hand; fits the execute playbook as one more step</td>
+          <td>Relies on the agent remembering (playbook + ship help-line nudge mitigate)</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-pr" id="opt-pr-gh"
+            value="Server polls gh pr list for the feature branch" data-brain-action></td>
+          <td><label for="opt-pr-gh">Server polls <code>gh pr list</code></label></td>
+          <td>Automatic</td>
+          <td>Requires gh + auth + network in the server process; new failure modes; breaks zero-dep spirit</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-pr" id="opt-pr-git"
+            value="Infer from git remote branch push" data-brain-action></td>
+          <td><label for="opt-pr-git">Infer from branch push</label></td>
+          <td>No new verb</td>
+          <td>Push ≠ PR; fragile inference; no PR URL to link</td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn-queue" data-brain-action
+      onclick="queueDecision('decision-pr', 'How is PR-opened detected?')">
+      Queue answer</button>
+    <span class="queue-ack" id="ack-decision-pr"></span>
+  </div>
+
+  <div class="decision-card" id="decision-logs" data-brain-action>
+    <p><strong>3. How deep do the logs go on the dashboard?</strong></p>
+    <p><code>runs append</code> stores verbatim command output per step in
+    <code>features/&lt;slug&gt;/runs/*.md</code>. The current sidebar strip shows
+    only checkpoint summaries.</p>
+    <table>
+      <thead><tr><th></th><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><input type="radio" name="decision-logs" id="opt-logs-accordion"
+            value="Step accordion: titles visible, verbatim output in collapsible details" checked data-brain-action></td>
+          <td><label for="opt-logs-accordion">Step accordion — titles visible, verbatim output behind <code>&lt;details&gt;</code>
+            <span class="tag-recommended">(recommended)</span></label></td>
+          <td>Scannable timeline AND full evidence one click away; cheap to render</td>
+          <td>Long outputs need a per-step char cap with a "view file" pointer</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-logs" id="opt-logs-summary"
+            value="Summaries only, point to CLI for logs" data-brain-action></td>
+          <td><label for="opt-logs-summary">Summaries only + CLI pointer</label></td>
+          <td>Simplest</td>
+          <td>Defeats the point — "viewing the logs" was the ask</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-logs" id="opt-logs-full"
+            value="Full verbatim logs always expanded" data-brain-action></td>
+          <td><label for="opt-logs-full">Full logs always expanded</label></td>
+          <td>Nothing hidden</td>
+          <td>Wall of text; DOM bloat on long runs</td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn-queue" data-brain-action
+      onclick="queueDecision('decision-logs', 'How deep do dashboard logs go?')">
+      Queue answer</button>
+    <span class="queue-ack" id="ack-decision-logs"></span>
+  </div>
+
+  <div class="decision-card" id="decision-handoff" data-brain-action>
+    <p><strong>4. How does the reviewer get from approval to the dashboard?</strong></p>
+    <table>
+      <thead><tr><th></th><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><input type="radio" name="decision-handoff" id="opt-handoff-link"
+            value="Chrome shows a 'Watch execution' link when a feature-bound session ends, plus brain watch <feature> CLI" checked data-brain-action></td>
+          <td><label for="opt-handoff-link">End-of-session link in chrome + <code>brain watch &lt;feature&gt;</code> CLI
+            <span class="tag-recommended">(recommended)</span></label></td>
+          <td>Zero surprise; works from both the browser and the terminal; CLI verb doubles as the re-open path days later</td>
+          <td>One extra click</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-handoff" id="opt-handoff-redirect"
+            value="Auto-redirect the chrome tab to the dashboard on session end" data-brain-action></td>
+          <td><label for="opt-handoff-redirect">Auto-redirect on session end</label></td>
+          <td>Seamless</td>
+          <td>Hijacks the tab; user may want to re-read the plan; wrong when the session ends unapproved</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-handoff" id="opt-handoff-cli"
+            value="CLI command only, no chrome affordance" data-brain-action></td>
+          <td><label for="opt-handoff-cli">CLI only</label></td>
+          <td>Least chrome work</td>
+          <td>Reviewer is already in the browser at approval time; discontinuous</td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn-queue" data-brain-action
+      onclick="queueDecision('decision-handoff', 'How does the reviewer reach the dashboard?')">
+      Queue answer</button>
+    <span class="queue-ack" id="ack-decision-handoff"></span>
+  </div>
+</section>
+
+<!-- 7 · PLAN OF RECORD -->
+<section id="plan-of-record" data-brain-section="plan-of-record">
+  <h2>Plan of record</h2>
+  <ol>
+    <template>
+      <li data-brain-item>
+        <span data-item-text data-brain-action></span>
+        <span class="item-controls">
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+        </span>
+      </li>
+    </template>
+    <li data-brain-item="0"><strong>Phase 1 — data layer.</strong>
+      <span data-item-text data-brain-action>brain-data.js: parse run-step files into
+      structured steps ({n, title, observed}), read/write a per-feature PR record
+      (features/&lt;slug&gt;/pr.json: {url, opened_at}), and a watchContext(brain, feature)
+      payload = executionContext + steps + pr. Acceptance: node -e smoke calls return
+      correct shapes against the fixture; brain check stays green.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="1"><strong>Phase 2 — server routes.</strong>
+      <span data-item-text data-brain-action>server.js: GET /watch/&lt;feature&gt; (serves
+      dashboard.html with {{FEATURE}} substituted), GET /watch/&lt;feature&gt;/context
+      (watchContext JSON), GET /watch/&lt;feature&gt;/shot/&lt;rel&gt; (reuse existing
+      path-sandboxed shot serving), SSE /watch-events/&lt;feature&gt; emitting
+      context-update on .brain/features/&lt;slug&gt; changes (reuse existing watcher +
+      debounce). Unknown feature → 404 JSON with help. Acceptance: curl returns payload;
+      touching a run note fires SSE within 1s.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="2"><strong>Phase 3 — dashboard page.</strong>
+      <span data-item-text data-brain-action>New lib/review/dashboard.html +
+      dashboard.js (plain ES2020, editorial v7 palette): lifecycle pipeline header
+      (stage chips, current stage bold), health strip, checkpoint feed, run-step
+      accordion (per D3), verification verdict chips, screenshot rail, PR terminal
+      card (link + opened_at) once pr.json exists. Empty states one-liners.
+      Live-update on SSE. Acceptance: renders every section against the fixture
+      brain-review feature; a runs append appears without manual reload.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="3"><strong>Phase 4 — CLI verbs + docs.</strong>
+      <span data-item-text data-brain-action>bin/brain.js: `brain watch &lt;feature&gt;`
+      (ensure server, print TOON {url}, open browser unless --no-open) and
+      `brain pr &lt;slug&gt; --url &lt;url&gt;` (validates https URL, writes pr.json,
+      appends progress checkpoint "PR opened for &lt;slug&gt;: &lt;url&gt;"). Both in
+      COMMANDS with --help, unknown-flag rejection, help: next-steps. skillContent()
+      + execute playbook updated (dashboard step + pr step after ship);
+      skill --check green. Acceptance: verbs work end-to-end against fixture.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="4"><strong>Phase 5 — chrome handoff.</strong>
+      <span data-item-text data-brain-action>chrome.js: when a session with a bound
+      feature reaches status ended, render a "Watch execution →" link (to
+      /watch/&lt;feature&gt;) in the ended-state banner. No other chrome changes.
+      Acceptance: link appears only for feature-bound ended sessions.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+  </ol>
+  <div class="list-add-row" data-brain-section-add="plan-of-record">
+    <input type="text" class="list-add-input" data-brain-action placeholder="Add a phase..." />
+    <button type="button" class="list-add-btn" data-brain-action>+ Add item</button>
+  </div>
+</section>
+
+<!-- 8 · FILES THAT CHANGE -->
+<section id="files-changed">
+  <h2>Files that change</h2>
+  <table>
+    <thead><tr><th>Path</th><th>Change</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td><code>lib/review/brain-data.js</code></td><td>edit</td><td>run-step parser, pr.json read/write, watchContext()</td></tr>
+      <tr><td><code>lib/review/server.js</code></td><td>edit</td><td>/watch routes, watch SSE channel, 404 handling</td></tr>
+      <tr><td><code>lib/review/dashboard.html</code></td><td>new</td><td>dashboard page shell (editorial palette)</td></tr>
+      <tr><td><code>lib/review/dashboard.js</code></td><td>new</td><td>render + SSE client logic</td></tr>
+      <tr><td><code>bin/brain.js</code></td><td>edit</td><td>watch + pr commands, skillContent() sync</td></tr>
+      <tr><td><code>lib/review/playbooks.js</code></td><td>edit</td><td>execute playbook: dashboard + pr steps</td></tr>
+      <tr><td><code>lib/review/chrome.js</code></td><td>edit</td><td>ended-state "Watch execution" link</td></tr>
+      <tr><td><code>docs/REVIEW-ARCHITECTURE.md</code></td><td>edit</td><td>Addendum v8: watch surface contract</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- 9 · GOLDEN PATH -->
+<section id="golden-path">
+  <h2>Golden path</h2>
+  <ol>
+    <li>Review session ends approved (feature-bound). Chrome shows
+      <em>"Watch execution →"</em>; reviewer clicks it (or agent prints the URL
+      from <code>brain watch brain-review</code>).</li>
+    <li>Dashboard opens at <code>/watch/brain-review</code>: pipeline header shows
+      <strong>plan approved</strong> stage; sections mostly empty-state.</li>
+    <li>Agent runs the execute playbook: <code>set-status in-progress</code> →
+      pipeline advances; each <code>runs append</code> lands as a new accordion
+      step (verbatim output inside) within ~1s via SSE; each
+      <code>shots add</code> adds a thumbnail; verification doc lands as a
+      PASS/FAIL chip.</li>
+    <li><code>brain ship brain-review --evidence "…"</code> → stage
+      <strong>shipped</strong>; health strip re-checks.</li>
+    <li>Agent opens the PR (<code>gh pr create</code>), then
+      <code>brain pr brain-review --url https://github.com/...</code> →
+      dashboard renders the terminal <strong>PR opened</strong> card with the
+      link. Loop complete: approval → visible execution → PR.</li>
+  </ol>
+</section>
+
+<!-- 10 · ERROR PATHS -->
+<section id="error-paths">
+  <h2>Error paths</h2>
+  <table>
+    <thead><tr><th>Failure</th><th>Detected</th><th>Handled</th><th>User sees</th></tr></thead>
+    <tbody data-brain-section="error-paths">
+      <template>
+        <tr data-brain-item>
+          <td data-item-text data-brain-action></td>
+          <td colspan="2"></td>
+          <td><span class="item-controls">
+            <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+            <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+          </span></td>
+        </tr>
+      </template>
+      <tr data-brain-item="0">
+        <td data-item-text data-brain-action>Server not running when dashboard URL opened</td>
+        <td>connection refused</td>
+        <td><code>brain watch</code> respawns the server (same spawn/health-wait path as <code>brain review</code>)</td>
+        <td>Re-run <code>brain watch &lt;feature&gt;</code>; page loads
+          <span class="item-controls"><button type="button" class="item-x" data-brain-action>x</button><button type="button" class="item-restore" data-brain-action hidden>restore</button></span></td>
+      </tr>
+      <tr data-brain-item="1">
+        <td data-item-text data-brain-action>Unknown feature slug in /watch URL</td>
+        <td>slug not in feature_list.json (either layout)</td>
+        <td>404 JSON {error, help} — never a stack trace</td>
+        <td>Friendly "no such feature" + list of known slugs
+          <span class="item-controls"><button type="button" class="item-x" data-brain-action>x</button><button type="button" class="item-restore" data-brain-action hidden>restore</button></span></td>
+      </tr>
+      <tr data-brain-item="2">
+        <td data-item-text data-brain-action>Invalid --url passed to brain pr</td>
+        <td>not http(s) URL</td>
+        <td>usageError exit 2, nothing written</td>
+        <td>error: + corrected help: line
+          <span class="item-controls"><button type="button" class="item-x" data-brain-action>x</button><button type="button" class="item-restore" data-brain-action hidden>restore</button></span></td>
+      </tr>
+      <tr data-brain-item="3">
+        <td data-item-text data-brain-action>Server restarts (version mismatch / shutdown) while dashboard open</td>
+        <td>SSE drop + chrome-reload broadcast</td>
+        <td>dashboard reuses chrome's reconnect idiom: poll /health, then location.reload()</td>
+        <td>Brief "reconnecting…" chip, then a fresh page
+          <span class="item-controls"><button type="button" class="item-x" data-brain-action>x</button><button type="button" class="item-restore" data-brain-action hidden>restore</button></span></td>
+      </tr>
+      <tr data-brain-item="4">
+        <td data-item-text data-brain-action>Run-step file with huge verbatim output</td>
+        <td>observed block &gt; 8k chars</td>
+        <td>server truncates per-step with "… (truncated — see runs/&lt;file&gt;)" tail</td>
+        <td>Capped accordion body + pointer to the file
+          <span class="item-controls"><button type="button" class="item-x" data-brain-action>x</button><button type="button" class="item-restore" data-brain-action hidden>restore</button></span></td>
+      </tr>
+      <tr data-brain-item="5">
+        <td data-item-text data-brain-action>Idle shutdown while a dashboard tab is open</td>
+        <td>n/a — prevented</td>
+        <td>watch SSE clients count as activity in the existing idle check (same as chrome SSE)</td>
+        <td>Nothing; server stays up
+          <span class="item-controls"><button type="button" class="item-x" data-brain-action>x</button><button type="button" class="item-restore" data-brain-action hidden>restore</button></span></td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="list-add-row" data-brain-section-add="error-paths">
+    <input type="text" class="list-add-input" data-brain-action placeholder="Add a failure mode..." />
+    <button type="button" class="list-add-btn" data-brain-action>+ Add item</button>
+  </div>
+</section>
+
+<!-- 11 · TESTING PLAN -->
+<section id="testing-plan" data-brain-section="testing-plan">
+  <h2>Testing plan</h2>
+  <ul class="checklist">
+    <template>
+      <li data-brain-item>
+        <label><input type="checkbox"> <span data-item-text data-brain-action></span></label>
+        <span class="item-controls">
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+        </span>
+      </li>
+    </template>
+    <!-- dblclick on label text toggles the checkbox twice en route to edit mode;
+         nets back to original state — do NOT preventDefault, it would break click-to-check -->
+    <li data-brain-item="0"><label><input type="checkbox">
+      <span data-item-text data-brain-action>brain watch brain-review spawns server if needed, prints TOON url, opens dashboard rendering all sections from fixture data</span></label>
+      <span class="item-controls"><button type="button" class="item-x" data-brain-action>x</button><button type="button" class="item-restore" data-brain-action hidden>restore</button></span></li>
+    <li data-brain-item="1"><label><input type="checkbox">
+      <span data-item-text data-brain-action>runs append lands in the open dashboard within ~1s (SSE), no manual reload</span></label>
+      <span class="item-controls"><button type="button" class="item-x" data-brain-action>x</button><button type="button" class="item-restore" data-brain-action hidden>restore</button></span></li>
+    <li data-brain-item="2"><label><input type="checkbox">
+      <span data-item-text data-brain-action>shots add thumbnail appears; click opens full image via sandboxed shot route</span></label>
+      <span class="item-controls"><button type="button" class="item-x" data-brain-action>x</button><button type="button" class="item-restore" data-brain-action hidden>restore</button></span></li>
+    <li data-brain-item="3"><label><input type="checkbox">
+      <span data-item-text data-brain-action>verification doc write shows a PASS/FAIL/BLOCKED chip with correct color</span></label>
+      <span class="item-controls"><button type="button" class="item-x" data-brain-action>x</button><button type="button" class="item-restore" data-brain-action hidden>restore</button></span></li>
+    <li data-brain-item="4"><label><input type="checkbox">
+      <span data-item-text data-brain-action>brain pr writes pr.json + checkpoint; dashboard flips to PR-opened terminal card with working link; invalid URL exits 2 writing nothing</span></label>
+      <span class="item-controls"><button type="button" class="item-x" data-brain-action>x</button><button type="button" class="item-restore" data-brain-action hidden>restore</button></span></li>
+    <li data-brain-item="5"><label><input type="checkbox">
+      <span data-item-text data-brain-action>unknown feature slug → 404 JSON with known-slug help, no stack trace</span></label>
+      <span class="item-controls"><button type="button" class="item-x" data-brain-action>x</button><button type="button" class="item-restore" data-brain-action hidden>restore</button></span></li>
+    <li data-brain-item="6"><label><input type="checkbox">
+      <span data-item-text data-brain-action>server restart while dashboard open → auto-reconnect + reload (chrome-reload idiom)</span></label>
+      <span class="item-controls"><button type="button" class="item-x" data-brain-action>x</button><button type="button" class="item-restore" data-brain-action hidden>restore</button></span></li>
+    <li data-brain-item="7"><label><input type="checkbox">
+      <span data-item-text data-brain-action>idle-shutdown does not fire while a dashboard SSE client is connected</span></label>
+      <span class="item-controls"><button type="button" class="item-x" data-brain-action>x</button><button type="button" class="item-restore" data-brain-action hidden>restore</button></span></li>
+    <li data-brain-item="8"><label><input type="checkbox">
+      <span data-item-text data-brain-action>regression: review flow untouched (open, poll, feedback, end); brain check green; skill --check green</span></label>
+      <span class="item-controls"><button type="button" class="item-x" data-brain-action>x</button><button type="button" class="item-restore" data-brain-action hidden>restore</button></span></li>
+  </ul>
+  <div class="list-add-row" data-brain-section-add="testing-plan">
+    <input type="text" class="list-add-input" data-brain-action placeholder="Add a test..." />
+    <button type="button" class="list-add-btn" data-brain-action>+ Add item</button>
+  </div>
+</section>
+
+<!-- 12 · OPEN QUESTIONS -->
+<section id="open-questions" data-brain-section="open-questions">
+  <h2>Open questions</h2>
+  <h3>Resolved in round 1</h3>
+  <ul>
+    <li><strong>Stage ordering (shipped vs PR-opened):</strong> doesn't matter —
+      harness's call. Dashboard renders whichever arrives, no enforcement
+      (as planned).</li>
+    <li><strong>Multi-feature index at /watch:</strong> no — single-feature only.
+      Parallel feature work happens in separate worktrees; each can spin up its
+      own server/host if needed.</li>
+    <li><strong>Fold in the v3 plans-browsing surface:</strong> no — dashboard
+      stays execution-only. A separate command for browsing all plans comes
+      later.</li>
+  </ul>
+  <ul>
+    <template>
+      <li data-brain-item>
+        <span data-item-text data-brain-action></span>
+        <span class="item-controls">
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+        </span>
+      </li>
+    </template>
+  </ul>
+  <p style="color: var(--muted); font-size: 0.9em;">No open questions remain.
+  Add one below if something surfaces.</p>
+  <div class="list-add-row" data-brain-section-add="open-questions">
+    <input type="text" class="list-add-input" data-brain-action placeholder="Add an open question..." />
+    <button type="button" class="list-add-btn" data-brain-action>+ Add item</button>
+  </div>
+</section>
+
+<script>
+  function queueDecision(cardId, question) {
+    var card = document.getElementById(cardId);
+    var checked = card.querySelector('input[type="radio"]:checked');
+    if (!checked) return;
+    var choice = checked.value;
+    if (window.brain && typeof window.brain.queuePrompt === "function") {
+      window.brain.queuePrompt({
+        tag: "decision",
+        queueKey: cardId,
+        prompt: question + ": " + choice,
+        target: { type: "decision", question: question, choice: choice }
+      });
+    }
+    var ack = document.getElementById("ack-" + cardId);
+    if (ack) ack.textContent = "Queued: " + choice;
+  }
+
+  (function () {
+    function queueList(section, queueKey, prompt, action, item, index) {
+      if (window.brain && typeof window.brain.queuePrompt === "function") {
+        window.brain.queuePrompt({
+          tag: "list-edit",
+          queueKey: queueKey,
+          prompt: prompt,
+          target: { type: "list-edit", section: section, action: action, item: item, index: index }
+        });
+      }
+    }
+    function slugify(s) {
+      return String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "").slice(0, 60) || "item";
+    }
+    function itemText(el) {
+      var t = el.querySelector("[data-item-text]");
+      return (t || el).textContent.trim();
+    }
+    function addBadge(el, cls, label) {
+      var badge = el.querySelector("." + cls);
+      if (!badge) {
+        badge = document.createElement("span");
+        badge.className = "item-badge " + cls;
+        el.appendChild(badge);
+      }
+      badge.textContent = label;
+    }
+    function toggleRemoved(item, section) {
+      var index = Number(item.getAttribute("data-brain-item"));
+      var text = itemText(item);
+      var removed = item.classList.toggle("item-removed");
+      var xBtn = item.querySelector(".item-x");
+      var restoreBtn = item.querySelector(".item-restore");
+      if (xBtn) xBtn.hidden = removed;
+      if (restoreBtn) restoreBtn.hidden = !removed;
+      var key = section + ":remove:" + index;
+      if (removed) {
+        queueList(section, key, "Remove from " + section + ": \"" + text + "\"", "remove", text, index);
+      } else {
+        queueList(section, key, "Cancelled: keep \"" + text + "\" in " + section, "edit", text, index);
+      }
+    }
+    function startEdit(item, section) {
+      if (item.classList.contains("item-removed")) return;
+      var span = item.querySelector("[data-item-text]");
+      if (!span || span.isContentEditable) return;
+      var before = span.textContent;
+      span.setAttribute("contenteditable", "true");
+      span.focus();
+      function commit() {
+        span.removeAttribute("contenteditable");
+        span.removeEventListener("blur", commit);
+        span.removeEventListener("keydown", onKey);
+        var text = span.textContent.trim();
+        if (!text || text === before.trim()) { span.textContent = before; return; }
+        var index = Number(item.getAttribute("data-brain-item"));
+        addBadge(item, "item-badge-edited", "edited");
+        queueList(section, section + ":edit:" + index,
+          "Edit " + section + " item " + index + ": \"" + text + "\"", "edit", text, index);
+      }
+      function onKey(ev) {
+        if (ev.key === "Enter") { ev.preventDefault(); span.blur(); }
+        else if (ev.key === "Escape") { span.textContent = before; ev.preventDefault(); span.blur(); }
+      }
+      span.addEventListener("blur", commit);
+      span.addEventListener("keydown", onKey);
+    }
+    function commitAdd(addRow) {
+      var section = addRow.getAttribute("data-brain-section-add");
+      var input = addRow.querySelector(".list-add-input");
+      var text = input.value.trim();
+      if (!text) return;
+      var list = document.querySelector("[data-brain-section=\"" + section + "\"]");
+      var tpl = list && list.querySelector("template");
+      if (!list || !tpl) return;
+      var node = document.importNode(tpl.content, true);
+      var item = node.querySelector("[data-brain-item]") || node.firstElementChild;
+      item.setAttribute("data-brain-item", "new");
+      var span = item.querySelector("[data-item-text]");
+      if (span) span.textContent = text;
+      item.classList.add("item-proposed");
+      addBadge(item, "item-badge-proposed", "proposed");
+      list.insertBefore(node, tpl.nextSibling);
+      input.value = "";
+      queueList(section, section + ":add:" + slugify(text),
+        "Add to " + section + ": \"" + text + "\"", "add", text, null);
+    }
+    document.addEventListener("click", function (ev) {
+      var xBtn = ev.target.closest(".item-x");
+      var restoreBtn = ev.target.closest(".item-restore");
+      if (xBtn || restoreBtn) {
+        var item = ev.target.closest("[data-brain-item]");
+        var section = ev.target.closest("[data-brain-section]");
+        if (item && section) toggleRemoved(item, section.getAttribute("data-brain-section"));
+        return;
+      }
+      var addBtn = ev.target.closest(".list-add-btn");
+      if (addBtn) {
+        var addRow = ev.target.closest("[data-brain-section-add]");
+        if (addRow) commitAdd(addRow);
+      }
+    });
+    document.addEventListener("dblclick", function (ev) {
+      var item = ev.target.closest("[data-brain-item]");
+      if (!item) return;
+      var section = item.closest("[data-brain-section]");
+      if (section) startEdit(item, section.getAttribute("data-brain-section"));
+    });
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key !== "Enter") return;
+      var addRow = ev.target.closest("[data-brain-section-add]");
+      if (addRow && ev.target.classList.contains("list-add-input")) {
+        ev.preventDefault();
+        commitAdd(addRow);
+      }
+    });
+  })();
+</script>
+
+</body>
+</html>

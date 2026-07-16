@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>.brain data format &amp; scaling strategy</title>
+<style>
+  :root {
+    --bg: #faf9f5; --surface: #ffffff; --fg: #141413; --fg-secondary: #3d3d3a;
+    --muted: #73726c; --border: #dedcd1; --highlight: #fff7ca; --accent: #d97757;
+    --space-2: 8px; --space-3: 16px; --space-4: 24px; --space-6: 40px;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      Helvetica, Arial, sans-serif;
+    font-size: 16px; background: var(--bg); color: var(--fg); line-height: 1.6;
+    max-width: 72ch; margin: 0 auto; padding: var(--space-6) var(--space-4);
+  }
+  h1, h2, h3 {
+    font-family: Charter, "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+    font-weight: 600; line-height: 1.25; color: var(--fg);
+  }
+  h1 { font-size: 1.75em; }
+  h2 { font-size: 1.3em; font-weight: 500; margin-top: var(--space-6);
+    border-bottom: 1px solid var(--border); padding-bottom: var(--space-2); }
+  h3 { font-size: 1.05em; font-weight: 500; }
+  p, li { color: var(--fg-secondary); }
+  mark, .highlight { background: var(--highlight); color: var(--fg); padding: 0 2px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 4px;
+    padding: 0 4px; }
+  .chip { display: inline-block; padding: 2px 10px; border-radius: 999px;
+    font-size: 0.8em; font-weight: 600; border: 1px solid var(--border); }
+  .chip-status-draft { background: var(--surface); color: var(--muted); }
+  .chip-status-in-review { background: var(--highlight); color: var(--fg);
+    border-color: var(--highlight); }
+  .chip-high { color: var(--accent); border-color: var(--accent); }
+  .chip-med { color: var(--fg-secondary); }
+  .chip-low { color: var(--muted); }
+  .decision-card { background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: var(--space-4); margin: var(--space-4) 0; }
+  table { width: 100%; border-collapse: collapse; margin: var(--space-3) 0;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    overflow: hidden; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid
+    var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  .tag-recommended { color: var(--accent); font-weight: 600; }
+  .btn-queue, .btn-approve, .btn-request-changes {
+    border: none; border-radius: 10px; padding: 8px 16px; font-weight: 600;
+    cursor: pointer; font-size: 0.95em;
+  }
+  .btn-queue, .btn-approve { background: var(--fg); color: #fff; }
+  .btn-request-changes { background: transparent; color: var(--fg);
+    border: 1px solid var(--border); }
+  .queue-ack { margin-left: var(--space-3); font-size: 0.9em; color: var(--muted); }
+  .checklist { list-style: none; padding: 0; }
+  .checklist li { margin: var(--space-2) 0; }
+  pre.mermaid { text-align: center; }
+  pre.mermaid svg { display: block; margin: 0 auto; }
+  .item-x, .item-restore, .list-add-btn { cursor: pointer; border: 1px solid var(--border);
+    background: var(--surface); border-radius: 6px; font-size: 0.85em; padding: 1px 8px;
+    color: var(--fg-secondary); }
+  [data-item-text] { cursor: text; }
+  .item-removed { opacity: 0.5; }
+  .item-removed [data-item-text] { text-decoration: line-through; }
+  .item-edited [data-item-text] { border-bottom: 2px dotted var(--accent); }
+  .item-badge { font-size: 0.75em; color: var(--muted); margin-left: 6px; font-style: italic; }
+  .item-badge-proposed { color: var(--accent); }
+  .item-proposed { border-left: 2px dashed var(--accent); padding-left: 6px; }
+  .list-add-row { display: flex; gap: 8px; margin-top: var(--space-2); }
+  .list-add-input { flex: 1; padding: 6px 10px; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--surface); color: var(--fg); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>.brain data format &amp; scaling strategy</h1>
+  <div>
+    <span>2026-07-16</span> ·
+    <span>feature: (harness-wide)</span> ·
+    <span class="chip chip-status-draft">draft</span> ·
+    <span>round 0</span>
+  </div>
+</header>
+
+<section id="tldr">
+  <h2>TL;DR</h2>
+  <p><mark>The on-disk format is not the lever — output shaping is.</mark> Agents never
+  read <code>.brain/</code> files raw; they read the CLI's stdout, which is already TOON
+  and already truncates long bodies, so switching storage to TOON or JSONC would save
+  approximately zero context. The real scaling risk is the handful of commands whose
+  <em>output</em> grows unbounded with data — above all <code>brain context</code>, which
+  the SessionStart hook injects into <strong>every</strong> agent session and which
+  currently prints every feature.</p>
+</section>
+
+<section id="context">
+  <h2>Context</h2>
+  <p>Per the 2026-07-14 checkpoint ("Harness loop closed: .brain-onto-itself +
+  .claude/commands verified. skill --check + brain check 8/8 green"), this brain now
+  tracks brain-axi itself: feat-001 <code>core-cli</code> is shipped, feat-002
+  <code>brain-review</code> is in-progress. No prior plan artifacts exist — this is the
+  first review round in this brain.</p>
+  <p>Today's data is small: <strong>120 KB across 23 files</strong>, 2 features in
+  <code>feature_list.json</code> (1.9 KB), 3 checkpoints in <code>progress.md</code>
+  (1.9 KB). Nothing is slow yet. This plan is preventive: it decides the format question
+  now and bounds the growth surfaces before a 50-feature, 200-checkpoint brain makes
+  every session start expensive.</p>
+
+  <h3>Where output is bounded today — and where it is not</h3>
+  <table>
+    <thead><tr><th>Surface</th><th>Location</th><th>Today</th></tr></thead>
+    <tbody>
+      <tr><td>Doc/run/feature bodies</td><td><code>bodyLines</code> bin/brain.js:291</td>
+        <td>capped at 1,200 chars unless <code>--full</code> ✓</td></tr>
+      <tr><td><code>features</code> list</td><td>bin/brain.js:411</td>
+        <td><code>--limit</code>, default 100 ✓ (high, but bounded)</td></tr>
+      <tr><td><code>progress</code></td><td>bin/brain.js:679</td>
+        <td>latest in full + <code>--limit</code> 10 older ✓</td></tr>
+      <tr><td><code>search</code></td><td>bin/brain.js:983, :995</td>
+        <td>20 rows, 120-char snippets ✓ (but accumulates all matches in memory first)</td></tr>
+      <tr><td><code>home</code> dashboard</td><td>bin/brain.js:335</td>
+        <td><strong>all features, every invocation — unbounded</strong></td></tr>
+      <tr><td><code>context</code> (SessionStart hook)</td><td>bin/brain.js:1015–1025</td>
+        <td><strong>all features, injected into every session — unbounded</strong></td></tr>
+      <tr><td><code>runs</code> list</td><td>bin/brain.js:785</td>
+        <td><strong>all run notes — unbounded</strong></td></tr>
+      <tr><td><code>docs</code> section lists</td><td>bin/brain.js:919–920</td>
+        <td><strong>all docs per section — unbounded</strong></td></tr>
+      <tr><td><code>progress.md</code> the file</td><td><code>parseProgress</code> bin/brain.js:244</td>
+        <td><strong>grows forever; fully parsed on every read</strong></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="big-picture">
+  <h2>Big picture</h2>
+  <p>The pipeline below is why storage format is invisible to the agent: everything on
+  disk passes through the CLI's parsers and comes out the TOON encoder. Context cost is
+  decided entirely at the <mark>stdout boundary</mark>.</p>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({ startOnLoad: true, theme: "neutral" });
+  </script>
+  <pre class="mermaid">
+  flowchart TD
+    FS[".brain/ on disk<br/>feature_list.json + markdown"] --> P["bin/brain.js parsers<br/>loadFeatureList :231 · parseProgress :244"]
+    P --> T["TOON encoder<br/>kv · toonTable · bodyLines cap"]
+    T --> OUT["stdout — the ONLY thing<br/>that enters agent context"]
+    OUT --> A["agent context window"]
+    HOOK["SessionStart hook"] -->|"brain context, every session"| P
+  </pre>
+</section>
+
+<section id="decisions">
+  <h2>Decisions needed</h2>
+
+  <div class="decision-card" id="decision-storage-format" data-brain-action>
+    <p><strong>1. On-disk storage format for .brain data?</strong></p>
+    <p>The concern that prompted this plan: would TOON and/or JSONC storage scale better?
+    Since agents only ever see CLI stdout, storage format changes zero context bytes —
+    the tradeoffs are purely about tooling, diffs, and the zero-dependency constraint.</p>
+    <table>
+      <thead><tr><th></th><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><input type="radio" name="decision-storage-format" id="opt-keep-json"
+            value="Keep JSON + Markdown (status quo)" checked data-brain-action></td>
+          <td><label for="opt-keep-json">Keep JSON + Markdown
+            <span class="tag-recommended">(recommended)</span></label></td>
+          <td>Native <code>JSON.parse</code>; git-diff friendly; humans and editors can
+            open everything; zero migration</td>
+          <td>No comments in the tracker (use description fields instead)</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-storage-format" id="opt-jsonc"
+            value="JSONC for feature_list.json" data-brain-action></td>
+          <td><label for="opt-jsonc">JSONC for <code>feature_list.json</code></label></td>
+          <td>Inline comments in the tracker</td>
+          <td>Node has no native JSONC parser — hand-rolled comment stripper under the
+            zero-dep rule; other tools reading the file break; saves 0 context bytes</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-storage-format" id="opt-toon-disk"
+            value="TOON on disk everywhere" data-brain-action></td>
+          <td><label for="opt-toon-disk">TOON on disk everywhere</label></td>
+          <td>One format on the wire and at rest</td>
+          <td>The codebase has a TOON <em>encoder</em> only — a parser must be written
+            and maintained; worse diffs for nested data; no editor/ecosystem support;
+            still saves 0 context bytes</td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn-queue" data-brain-action
+      onclick="queueDecision('decision-storage-format',
+        'On-disk storage format for .brain data?')">
+      Queue answer
+    </button>
+    <span class="queue-ack" id="ack-decision-storage-format"></span>
+  </div>
+
+  <div class="decision-card" id="decision-context-shape" data-brain-action>
+    <p><strong>2. What should <code>home</code> / <code>context</code> emit as the feature
+      set grows?</strong> <span class="chip chip-high">highest leverage</span></p>
+    <p><code>brain context</code> runs from the installed SessionStart hook, so its output
+    lands in <em>every</em> agent session unprompted. At 50 features, today's behavior
+    injects a 50-row table before the agent has asked anything.</p>
+    <table>
+      <thead><tr><th></th><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><input type="radio" name="decision-context-shape" id="opt-summary"
+            value="Status counts + in-progress detail + last 5 changed" checked data-brain-action></td>
+          <td><label for="opt-summary">Counts per status + in-progress feature in detail +
+            5 most recently changed
+            <span class="tag-recommended">(recommended)</span></label></td>
+          <td>O(1) output regardless of brain size; the in-progress feature (the one that
+            matters) stays fully visible; full list one command away</td>
+          <td>Agent must run <code>brain features</code> to see everything</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-context-shape" id="opt-cap-rows"
+            value="Cap the table at N rows with an 'and X more' line" data-brain-action></td>
+          <td><label for="opt-cap-rows">Cap table at N rows + "and X more" hint</label></td>
+          <td>Minimal code change; still shows real rows</td>
+          <td>Which N rows? Arbitrary cut hides shipped/blocked state the agent may need</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-context-shape" id="opt-leave-context"
+            value="Leave as-is" data-brain-action></td>
+          <td><label for="opt-leave-context">Leave as-is</label></td>
+          <td>No change</td>
+          <td>Session-start context cost grows linearly with feature count, forever</td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn-queue" data-brain-action
+      onclick="queueDecision('decision-context-shape',
+        'What should home/context emit as the feature set grows?')">
+      Queue answer
+    </button>
+    <span class="queue-ack" id="ack-decision-context-shape"></span>
+  </div>
+
+  <div class="decision-card" id="decision-progress-growth" data-brain-action>
+    <p><strong>3. How to handle <code>progress.md</code> growing forever?</strong></p>
+    <p>Display is already capped (latest + 10), so the cost today is parse time and file
+    size, not context. But a 500-checkpoint file makes every <code>progress add</code>
+    rewrite a large file and every read re-split it.</p>
+    <table>
+      <thead><tr><th></th><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><input type="radio" name="decision-progress-growth" id="opt-compact-cmd"
+            value="Manual 'progress compact' command" checked data-brain-action></td>
+          <td><label for="opt-compact-cmd">New <code>progress compact</code> command —
+            keep newest 20, archive the rest to <code>runs/archive/</code>
+            <span class="tag-recommended">(recommended)</span></label></td>
+          <td>Explicit, idempotent, CI-runnable next to <code>brain check</code>; archive
+            stays searchable via <code>brain search</code></td>
+          <td>Someone has to run it (or wire it into a harness command)</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-progress-growth" id="opt-auto-rotate"
+            value="Auto-rotate on progress add past a threshold" data-brain-action></td>
+          <td><label for="opt-auto-rotate">Auto-rotate inside <code>progress add</code>
+            once past a threshold</label></td>
+          <td>Zero maintenance</td>
+          <td>A write command silently moving data violates least-surprise; harder to
+            reason about in reviews</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-progress-growth" id="opt-progress-asis"
+            value="Leave as-is" data-brain-action></td>
+          <td><label for="opt-progress-asis">Leave as-is</label></td>
+          <td>Display already bounded; simplest</td>
+          <td>File-size and parse cost grow forever; git churn on a huge file</td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn-queue" data-brain-action
+      onclick="queueDecision('decision-progress-growth',
+        'How to handle progress.md growing forever?')">
+      Queue answer
+    </button>
+    <span class="queue-ack" id="ack-decision-progress-growth"></span>
+  </div>
+
+  <div class="decision-card" id="decision-list-limits" data-brain-action>
+    <p><strong>4. Default limits for <code>runs</code> and <code>docs</code> lists?</strong></p>
+    <table>
+      <thead><tr><th></th><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><input type="radio" name="decision-list-limits" id="opt-limit-20"
+            value="--limit default 20 + 'N more' hint line" checked data-brain-action></td>
+          <td><label for="opt-limit-20"><code>--limit</code> with default 20, plus an
+            explicit "and N more — use --limit" hint line
+            <span class="tag-recommended">(recommended)</span></label></td>
+          <td>Consistent with <code>features</code>/<code>progress</code>/<code>search</code>;
+            the hint keeps truncation honest (AXI contextual disclosure)</td>
+          <td>One more flag to keep in sync in <code>skillContent()</code></td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-list-limits" id="opt-lists-asis"
+            value="Leave unbounded" data-brain-action></td>
+          <td><label for="opt-lists-asis">Leave unbounded</label></td>
+          <td>Lists are one line per item — cheap in practice</td>
+          <td>A brain with 300 run notes still dumps 300 lines</td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn-queue" data-brain-action
+      onclick="queueDecision('decision-list-limits',
+        'Default limits for runs and docs lists?')">
+      Queue answer
+    </button>
+    <span class="queue-ack" id="ack-decision-list-limits"></span>
+  </div>
+</section>
+
+<section id="plan-of-record" data-brain-section="plan-of-record">
+  <h2>Plan of record</h2>
+  <ol>
+    <template>
+      <li data-brain-item>
+        <span data-item-text data-brain-action></span>
+        <span class="item-controls">
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+        </span>
+      </li>
+    </template>
+    <li data-brain-item="0"><strong>Phase 1 — bound the session-start surfaces.</strong>
+      <span data-item-text data-brain-action>Reshape cmdHome and cmdContext feature output
+      per decision 2. Acceptance: against a generated 100-feature fixture, home and
+      context output stays under ~30 lines; in-progress feature still shown in full;
+      brain check and skill --check stay green.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="1"><strong>Phase 2 — default limits on remaining lists.</strong>
+      <span data-item-text data-brain-action>Add --limit (default 20) + "N more" hint to
+      runs and docs lists per decision 4; make search stop accumulating past its display
+      limit. Acceptance: unknown flags still rejected (exit 2), every truncated output
+      says so explicitly, --help updated per command.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="2"><strong>Phase 3 — progress compaction.</strong>
+      <span data-item-text data-brain-action>Implement decision 3 (default: progress
+      compact keeping newest 20, archiving to runs/archive/progress-YYYY.md). Acceptance:
+      idempotent (second run is a no-op, exit 0); archived checkpoints still found by
+      brain search; progress output unchanged after compaction.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="3"><strong>Phase 4 — sync the teaching surfaces.</strong>
+      <span data-item-text data-brain-action>Update skillContent(), command help blocks,
+      and CLAUDE.md for every changed command. Acceptance: brain skill --check exits 0;
+      help: next-step lists mention the new flags where relevant.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+  </ol>
+  <div class="list-add-row" data-brain-section-add="plan-of-record">
+    <input type="text" class="list-add-input" data-brain-action placeholder="Add a phase..." />
+    <button type="button" class="list-add-btn" data-brain-action>+ Add item</button>
+  </div>
+</section>
+
+<section id="files-changed">
+  <h2>Files that change</h2>
+  <table>
+    <thead><tr><th>Path</th><th>Change</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>bin/brain.js — <code>cmdHome</code>, <code>cmdContext</code></td><td>edit</td>
+        <td>bounded feature summary (phase 1)</td></tr>
+      <tr><td>bin/brain.js — <code>cmdRuns</code>, <code>cmdDocs</code>, <code>cmdSearch</code></td><td>edit</td>
+        <td>default limits + hint lines (phase 2)</td></tr>
+      <tr><td>bin/brain.js — <code>cmdProgress</code> + new compact handler</td><td>edit</td>
+        <td>archival (phase 3)</td></tr>
+      <tr><td>bin/brain.js — <code>skillContent()</code></td><td>edit</td>
+        <td>skill drift check must stay green (phase 4)</td></tr>
+      <tr><td>CLAUDE.md</td><td>edit</td>
+        <td>document new flags/commands (phase 4)</td></tr>
+      <tr><td><code>.brain/features/feature_list.json</code>, <code>.brain/runs/*.md</code></td>
+        <td>none</td><td>format unchanged per decision 1 (recommended)</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="golden-path">
+  <h2>Golden path</h2>
+  <p>A session start against a large brain, after this plan ships:</p>
+  <pre class="mermaid">
+  sequenceDiagram
+    participant H as SessionStart hook
+    participant C as brain context
+    participant A as Agent
+    H->>C: node brain.js context
+    C-->>A: TOON: counts by status, in-progress detail, latest checkpoint (~25 lines, O(1))
+    A->>C: brain features --status blocked
+    C-->>A: only the rows asked for
+    A->>C: brain progress add --summary "..." --next "..."
+    C-->>A: ok + help: next steps
+  </pre>
+</section>
+
+<section id="error-paths">
+  <h2>Error paths</h2>
+  <table>
+    <thead><tr><th>Failure</th><th>Detected by</th><th>Handled by</th><th>Agent sees</th></tr></thead>
+    <tbody data-brain-section="error-paths">
+      <template>
+        <tr data-brain-item>
+          <td data-item-text data-brain-action></td>
+          <td colspan="2"></td>
+          <td><span class="item-controls">
+            <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+            <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+          </span></td>
+        </tr>
+      </template>
+      <tr data-brain-item="0">
+        <td data-item-text data-brain-action>progress compact with no progress.md</td>
+        <td>missing file check</td>
+        <td>exit 0 no-op (matches existing no-op convention)</td>
+        <td>ok line + help
+          <span class="item-controls">
+            <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+            <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+          </span></td>
+      </tr>
+      <tr data-brain-item="1">
+        <td data-item-text data-brain-action>--limit 0 or negative</td>
+        <td>flag validation in parseArgs spec</td>
+        <td>usageError, exit 2</td>
+        <td>error: + corrected help: line
+          <span class="item-controls">
+            <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+            <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+          </span></td>
+      </tr>
+      <tr data-brain-item="2">
+        <td data-item-text data-brain-action>archive file already exists for the year</td>
+        <td>existsSync before write</td>
+        <td>append below existing entries, never overwrite</td>
+        <td>ok line noting appended count
+          <span class="item-controls">
+            <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+            <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+          </span></td>
+      </tr>
+      <tr data-brain-item="3">
+        <td data-item-text data-brain-action>old brain with no runs/archive/ dir</td>
+        <td>mkdir failure / missing dir</td>
+        <td>mkdirSync recursive on first compact</td>
+        <td>nothing unusual — it just works
+          <span class="item-controls">
+            <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+            <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+          </span></td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="list-add-row" data-brain-section-add="error-paths">
+    <input type="text" class="list-add-input" data-brain-action placeholder="Add an error path..." />
+    <button type="button" class="list-add-btn" data-brain-action>+ Add item</button>
+  </div>
+</section>
+
+<section id="testing-plan" data-brain-section="testing-plan">
+  <h2>Testing plan</h2>
+  <ul class="checklist">
+    <template>
+      <li data-brain-item>
+        <label><input type="checkbox"> <span data-item-text data-brain-action></span></label>
+        <span class="item-controls">
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+        </span>
+      </li>
+    </template>
+    <li data-brain-item="0">
+      <label><input type="checkbox"> <span data-item-text data-brain-action>Scale fixture:
+        script-generate a brain with 100 features + 200 checkpoints; byte-count home,
+        context, features, progress output before vs after — record the numbers in the
+        run note</span></label>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="1">
+      <label><input type="checkbox"> <span data-item-text data-brain-action>Golden path:
+        context against the scale fixture emits O(1) output and still shows the
+        in-progress feature + latest checkpoint</span></label>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="2">
+      <label><input type="checkbox"> <span data-item-text data-brain-action>Error path:
+        progress compact twice — second run exits 0 as a no-op, file unchanged</span></label>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="3">
+      <label><input type="checkbox"> <span data-item-text data-brain-action>Regression:
+        brain context outside any brain repo still exits 0 silently (hook invariant)</span></label>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="4">
+      <label><input type="checkbox"> <span data-item-text data-brain-action>Regression:
+        brain check 8/8 and brain skill --check exit 0 after every phase</span></label>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+  </ul>
+  <div class="list-add-row" data-brain-section-add="testing-plan">
+    <input type="text" class="list-add-input" data-brain-action placeholder="Add a test..." />
+    <button type="button" class="list-add-btn" data-brain-action>+ Add item</button>
+  </div>
+</section>
+
+<section id="open-questions" data-brain-section="open-questions">
+  <h2>Open questions</h2>
+  <ul>
+    <template>
+      <li data-brain-item>
+        <span data-item-text data-brain-action></span>
+        <span class="item-controls">
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+        </span>
+      </li>
+    </template>
+    <li data-brain-item="0">
+      <span data-item-text data-brain-action>Should shipped/cut features eventually move
+      out of feature_list.json into an archive file, or is a display filter enough
+      forever?</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="1">
+      <span data-item-text data-brain-action>Is there a target token budget per command
+      worth writing into HARNESS.md (e.g. context ≤ 500 tokens), so future commands have
+      a number to design against?</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="2">
+      <span data-item-text data-brain-action>timeline merges checkpoints + runs + plans +
+      verifications — should it get the same default-limit treatment in phase 2?</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+  </ul>
+  <div class="list-add-row" data-brain-section-add="open-questions">
+    <input type="text" class="list-add-input" data-brain-action placeholder="Add an open question..." />
+    <button type="button" class="list-add-btn" data-brain-action>+ Add item</button>
+  </div>
+</section>
+
+<section id="verdict">
+  <h2>Verdict</h2>
+  <div>
+    <button type="button" class="btn-approve" data-brain-action
+      onclick="queueVerdict('approve')">Approve plan</button>
+    <button type="button" class="btn-request-changes" data-brain-action
+      onclick="queueVerdict('request-changes')">Request changes</button>
+  </div>
+</section>
+
+<script>
+  function queueDecision(cardId, question) {
+    var card = document.getElementById(cardId);
+    var checked = card.querySelector('input[type="radio"]:checked');
+    if (!checked) return;
+    var choice = checked.value;
+    if (window.brain && typeof window.brain.queuePrompt === "function") {
+      window.brain.queuePrompt({
+        tag: "decision",
+        queueKey: cardId,
+        prompt: question + ": " + choice,
+        target: { type: "decision", question: question, choice: choice }
+      });
+    }
+    var ack = document.getElementById("ack-" + cardId);
+    if (ack) ack.textContent = "Queued: " + choice;
+  }
+
+  function queueVerdict(verdict) {
+    if (!(window.brain && typeof window.brain.queuePrompt === "function")) return;
+    window.brain.queuePrompt({
+      tag: "message",
+      queueKey: "verdict",
+      prompt: verdict === "approve"
+        ? "Plan approved as written."
+        : "Requesting changes — see annotations."
+    });
+  }
+
+  (function () {
+    function queueList(section, queueKey, prompt, action, item, index) {
+      if (window.brain && typeof window.brain.queuePrompt === "function") {
+        window.brain.queuePrompt({
+          tag: "list-edit",
+          queueKey: queueKey,
+          prompt: prompt,
+          target: { type: "list-edit", section: section, action: action, item: item, index: index }
+        });
+      }
+    }
+
+    function slugify(s) {
+      return String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "").slice(0, 60) || "item";
+    }
+
+    function itemText(el) {
+      var t = el.querySelector("[data-item-text]");
+      return (t || el).textContent.trim();
+    }
+
+    function addBadge(el, cls, label) {
+      var badge = el.querySelector("." + cls);
+      if (!badge) {
+        badge = document.createElement("span");
+        badge.className = "item-badge " + cls;
+        el.appendChild(badge);
+      }
+      badge.textContent = label;
+    }
+
+    function toggleRemoved(item, section) {
+      var index = Number(item.getAttribute("data-brain-item"));
+      var text = itemText(item);
+      var removed = item.classList.toggle("item-removed");
+      var xBtn = item.querySelector(".item-x");
+      var restoreBtn = item.querySelector(".item-restore");
+      if (xBtn) xBtn.hidden = removed;
+      if (restoreBtn) restoreBtn.hidden = !removed;
+      var key = section + ":remove:" + index;
+      if (removed) {
+        queueList(section, key, "Remove from " + section + ": \"" + text + "\"", "remove", text, index);
+      } else {
+        queueList(section, key, "Cancelled: keep \"" + text + "\" in " + section, "edit", text, index);
+      }
+    }
+
+    function startEdit(item, section) {
+      if (item.classList.contains("item-removed")) return;
+      var span = item.querySelector("[data-item-text]");
+      if (!span || span.isContentEditable) return;
+      var before = span.textContent;
+      span.setAttribute("contenteditable", "true");
+      span.focus();
+
+      function commit() {
+        span.removeAttribute("contenteditable");
+        span.removeEventListener("blur", commit);
+        span.removeEventListener("keydown", onKey);
+        var text = span.textContent.trim();
+        if (!text || text === before.trim()) { span.textContent = before; return; }
+        var index = Number(item.getAttribute("data-brain-item"));
+        addBadge(item, "item-badge-edited", "edited");
+        queueList(section, section + ":edit:" + index,
+          "Edit " + section + " item " + index + ": \"" + text + "\"", "edit", text, index);
+      }
+      function onKey(ev) {
+        if (ev.key === "Enter") { ev.preventDefault(); span.blur(); }
+        else if (ev.key === "Escape") { span.textContent = before; ev.preventDefault(); span.blur(); }
+      }
+      span.addEventListener("blur", commit);
+      span.addEventListener("keydown", onKey);
+    }
+
+    function commitAdd(addRow) {
+      var section = addRow.getAttribute("data-brain-section-add");
+      var input = addRow.querySelector(".list-add-input");
+      var text = input.value.trim();
+      if (!text) return;
+      var list = document.querySelector("[data-brain-section=\"" + section + "\"]");
+      var tpl = list && list.querySelector("template");
+      if (!list || !tpl) return;
+      var node = document.importNode(tpl.content, true);
+      var item = node.querySelector("[data-brain-item]") || node.firstElementChild;
+      item.setAttribute("data-brain-item", "new");
+      var span = item.querySelector("[data-item-text]");
+      if (span) span.textContent = text;
+      item.classList.add("item-proposed");
+      addBadge(item, "item-badge-proposed", "proposed");
+      list.insertBefore(node, tpl.nextSibling);
+      input.value = "";
+      queueList(section, section + ":add:" + slugify(text),
+        "Add to " + section + ": \"" + text + "\"", "add", text, null);
+    }
+
+    document.addEventListener("click", function (ev) {
+      var xBtn = ev.target.closest(".item-x");
+      var restoreBtn = ev.target.closest(".item-restore");
+      if (xBtn || restoreBtn) {
+        var item = ev.target.closest("[data-brain-item]");
+        var section = ev.target.closest("[data-brain-section]");
+        if (item && section) toggleRemoved(item, section.getAttribute("data-brain-section"));
+        return;
+      }
+      var addBtn = ev.target.closest(".list-add-btn");
+      if (addBtn) {
+        var addRow = ev.target.closest("[data-brain-section-add]");
+        if (addRow) commitAdd(addRow);
+      }
+    });
+
+    document.addEventListener("dblclick", function (ev) {
+      var item = ev.target.closest("[data-brain-item]");
+      if (!item) return;
+      var section = item.closest("[data-brain-section]");
+      if (section) startEdit(item, section.getAttribute("data-brain-section"));
+    });
+
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key !== "Enter") return;
+      var addRow = ev.target.closest("[data-brain-section-add]");
+      if (addRow && ev.target.classList.contains("list-add-input")) {
+        ev.preventDefault();
+        commitAdd(addRow);
+      }
+    });
+  })();
+</script>
+
+</body>
+</html>

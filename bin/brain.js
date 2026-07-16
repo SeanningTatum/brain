@@ -19,6 +19,7 @@ import {
   getVerification,
   appendRunStep,
   brainCheck,
+  recordPr,
 } from "../lib/review/brain-data.js";
 import { sessionKey, stateDir, listSessions } from "../lib/review/store.js";
 import { PLAYBOOKS } from "../lib/review/playbooks.js";
@@ -647,6 +648,105 @@ function cmdShip(argv) {
       "Run `brain check` anytime to re-verify harness invariants",
     ])
   );
+  print(lines);
+}
+
+// ---------------------------------------------------------------------------
+// Execution dashboard verbs (Addendum v8 — /watch surface)
+// ---------------------------------------------------------------------------
+
+function cmdWatch(argv) {
+  const spec = {
+    "--no-open": { value: false, desc: "do not open the system browser" },
+    "--port": { value: true, desc: `review server port (default: ${REVIEW_DEFAULT_PORT} or BRAIN_AXI_PORT)` },
+  };
+  const { flags, positionals } = parseArgs(argv, spec, "watch");
+  if (flags.help)
+    helpBlock(
+      "watch",
+      "Open the live execution dashboard for a feature (progress, run-step logs, verifications, PR state)",
+      spec,
+      ["brain watch authentication", "brain watch authentication --no-open"],
+      ["<feature> — feature slug from `brain features`"]
+    );
+  const arg = positionals[0];
+  if (!arg) usageError("missing required argument <feature>", ["brain watch <feature>"]);
+
+  const brain = findBrain(flags.brain);
+  const list = loadFeatureList(brain);
+  const feat = list.features.find((f) => f.slug === arg || f.id === arg);
+  if (!feat) opError(`no feature "${arg}"`, [`known slugs: ${list.features.map((f) => f.slug).join(", ")}`]);
+
+  return watchAsync(brain, feat, flags);
+}
+
+async function watchAsync(brain, feat, flags) {
+  const port = resolveReviewPort(flags);
+  await ensureReviewServer(port);
+  const url = `http://127.0.0.1:${port}/watch/${encodeURIComponent(feat.slug)}?brain=${encodeURIComponent(brain)}`;
+
+  print([
+    "watch:",
+    kv("feature", feat.slug, 2),
+    kv("status", feat.status, 2),
+    kv("url", url, 2),
+    ...toonList("help", [
+      ...(flags["no-open"] ? [`Open ${url} in a browser — it live-updates as brain state changes`] : []),
+      `Run \`brain pr ${feat.slug} --url <pr-url>\` once a PR is opened to record the dashboard's terminal state`,
+      `Run \`brain runs append ${feat.slug} --step "..." --observed "..."\` per step — the dashboard picks each one up live`,
+    ]),
+  ]);
+
+  if (!flags["no-open"]) {
+    try {
+      const opener = process.platform === "darwin" ? "open" : "xdg-open";
+      const child = spawn(opener, [url], { detached: true, stdio: "ignore" });
+      child.on("error", () => {}); // never fail the command if the browser can't be opened
+      child.unref();
+    } catch {
+      // opening the browser is best-effort
+    }
+  }
+}
+
+function cmdPr(argv) {
+  const spec = {
+    "--url": { value: true, desc: "the opened pull request's URL (required)" },
+  };
+  const { flags, positionals } = parseArgs(argv, spec, "pr");
+  if (flags.help)
+    helpBlock(
+      "pr",
+      "Record the feature's opened pull request — the execution dashboard's terminal state",
+      spec,
+      ['brain pr authentication --url "https://github.com/org/repo/pull/42"'],
+      ["<slug> — feature slug from `brain features`"]
+    );
+  const slug = positionals[0];
+  if (!slug) usageError("missing required argument <slug>", ['brain pr <slug> --url "https://..."']);
+  if (!flags.url || !flags.url.trim())
+    usageError("--url is required", [`brain pr ${slug} --url "https://github.com/org/repo/pull/42"`]);
+  const url = flags.url.trim();
+  if (!/^https?:\/\//.test(url))
+    usageError(`invalid --url "${flags.url}"`, ["--url takes the PR's http(s) URL, e.g. https://github.com/org/repo/pull/42"]);
+
+  const brain = findBrain(flags.brain);
+  const list = loadFeatureList(brain);
+  const feat = list.features.find((f) => f.slug === slug || f.id === slug);
+  if (!feat) opError(`no feature "${slug}"`, [`known slugs: ${list.features.map((f) => f.slug).join(", ")}`]);
+
+  const { file } = recordPr(brain, feat.slug, url);
+
+  const lines = ["pr:", kv("feature", feat.slug, 2), kv("url", url, 2), kv("file", file, 2)];
+
+  const urlCapped = url.length > 120 ? url.slice(0, 120) : url;
+  const checkpointResult = appendProgressEntry(brain, { summary: `PR opened for ${feat.slug}: ${urlCapped}` });
+  if (checkpointResult) lines.push(kv("checkpoint", `PR opened for ${feat.slug}: ${urlCapped}`, 2));
+  else lines.push("warning: runs/progress.md not found — checkpoint not recorded");
+
+  const help = [`Run \`brain watch ${feat.slug}\` — the dashboard now shows the PR-opened terminal state`];
+  if (feat.status !== "shipped") help.push(`Run \`brain ship ${feat.slug} --evidence "..."\` once the feature is demonstrably working`);
+  lines.push(...toonList("help", help));
   print(lines);
 }
 
@@ -1999,6 +2099,13 @@ screenshots; checkpoints; runs \`brain check\` and reports failures honestly
 without rolling back the ship). \`runs/progress.md\` stays a rolling cursor;
 \`features/<slug>/runs/*.md\` is the deep, verbatim record.
 
+- \`npx -y brain-axi watch <feature>\` — opens the live execution dashboard in
+  the browser (feature status, harness health, checkpoints, run-step logs,
+  verification verdicts, screenshots, PR state). Offer the URL to the human
+  when starting execution; it live-updates as the commands above write state.
+- After opening a PR, record it: \`npx -y brain-axi pr <slug> --url <pr-url>\`
+  — this is the dashboard's terminal state (approval → execution → PR).
+
 ## Plan review (human-in-the-loop) — the DEFAULT for plans and approvals
 
 When the user asks for a plan, proposal, design, or a review of an approach, do NOT
@@ -2108,6 +2215,8 @@ const COMMANDS = {
   playbook: cmdPlaybook,
   check: cmdCheck,
   ship: cmdShip,
+  watch: cmdWatch,
+  pr: cmdPr,
 };
 
 function main() {

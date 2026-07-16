@@ -230,7 +230,7 @@ SDK → Chrome:
 - No-op safely when loaded standalone (no parent frame / direct file open): all guards, zero errors.
 - Annotate mode: capture-phase click interception. Skip native controls (`button, input, select, textarea, option, label, summary, a[href], [contenteditable]`) and their descendants, `[data-brain-action]`, and anything under `[data-brain-ui]`. Clicked element → build bounded CSS path (max 5 segments, `#id` short-circuit, `:nth-of-type` disambiguation) → `brain:queuePrompt` with `tag: "element"`, `text` = trimmed `textContent` capped 400.
 - Text selection (mouseup with non-collapsed selection, annotate mode): build text target per the shape above; `text` = selection string capped 400.
-- Highlight: elements get inline `outline: 2px solid #6d5dfc` on hover (annotate mode only, removed on leave); a shadow-DOM overlay div (`[data-brain-ui]`) hosts selection highlight fragments — never mutate artifact styles.
+- Highlight: elements get inline `outline: 2px solid #d97757` on hover (annotate mode only, removed on leave); a shadow-DOM overlay div (`[data-brain-ui]`) hosts selection highlight fragments — never mutate artifact styles.
 - Report scroll (rAF-throttled `brain:scroll`), answer `brain:requestSnapshot` with `document.documentElement.outerHTML` (SDK script tag stripped, capped 500k).
 - Cmd/Ctrl+I capture-phase → `brain:toggleAnnotationMode`.
 
@@ -595,3 +595,131 @@ CLI (`brain review poll`): the `prompts` TOON table's field order becomes
 `{tag, line, selector, text, prompt}`; when any prompt is returned, the response's
 `help:` list gains a line reminding the agent to apply edits via targeted
 reads/anchored replacements at that line instead of re-reading the whole artifact.
+
+---
+
+# Addendum v7 — editorial design system + open-question answer inputs removed (2026-07-15)
+
+## v7.1 Editorial visual system ("academic journal on vellum")
+
+One shared visual language across the chrome (chrome.html) and the plan playbook's
+authoring guidance (playbooks.js), synthesized from editorial references
+(claude.ai / Readwise / Medium via Refero):
+
+| Token | Value | Role |
+|-------|-------|------|
+| bg | `#faf9f5` | vellum canvas (chrome + plan artifacts) |
+| surface | `#ffffff` | cards, composer, inputs |
+| ink | `#141413` | primary text, filled primary buttons |
+| graphite | `#3d3d3a` | secondary text |
+| muted | `#73726c` | labels, timestamps |
+| faint | `#9c9a92` | placeholders, disabled |
+| border | `#dedcd1` | hairline borders/dividers (no heavy shadows) |
+| highlight | `#fff7ca` | queued annotation pills, highlighted phrases |
+| accent | `#d97757` | terra cotta — annotate-mode hover outline, decision badge, recommended markers; used sparingly |
+
+Typography: serif stack `Charter, 'Iowan Old Style', 'Palatino Linotype', Georgia, serif`
+for headings (weight ≤600, hierarchy by size); system sans for UI/body; body 14-16px,
+line-height 1.5-1.6; plan artifacts cap content at ~72ch. Radius ~10px; depth via
+hairline borders only. The SDK annotate hover outline and diagram hover/flash colors
+are `#d97757` (was `#6d5dfc`).
+
+## v7.2 Open-question answer inputs removed from the plan standard
+
+Since every part of the artifact is annotatable (element click + text selection),
+plans MUST NOT embed per-question fill-in "answer" text fields for open questions —
+the reviewer answers by annotating the question text directly. The list-edit
+component for open questions (add/remove/strike, Addendum v5) is unchanged. The
+`plan` playbook no longer teaches the fill-in answer input pattern.
+
+---
+
+# Addendum v8 — execution dashboard: the /watch surface (2026-07-16)
+
+Plan 2026-07-16-execution-dashboard, approved round 1, D1–D4 all at recommended:
+D1 `/watch/<feature>` route on the existing review server; D2 explicit `brain pr`
+verb as the terminal state; D3 step accordion for logs; D4 end-of-session chrome
+link + `brain watch` CLI. Scope locked in review: single-feature only (parallel
+feature work = separate worktrees/servers), execution-only (a plans-browsing
+surface is a later, separate command), no shipped/PR ordering enforcement (the
+dashboard renders whichever arrives).
+
+## Files
+
+```
+lib/review/dashboard.html   dashboard page shell ({{FEATURE}}, {{BRAIN}} substituted)
+lib/review/dashboard.js     render + SSE client (plain ES2020, chrome.js idioms)
+```
+
+## brain-data.js additions
+
+```js
+export function featureExists(brain, slug)        // slug or id in feature_list.json
+export function listRunSteps(brain, feature)      // [{name, title, file, steps: [{n, title, observed, truncated}]}]
+export function getPr(brain, feature)             // {url, opened_at} | null  (features/<slug>/pr.json)
+export function recordPr(brain, feature, url)     // writes pr.json; returns {file}
+export function watchContext(brain, feature)      // executionContext + {run_steps, pr}
+```
+
+Run-step parsing: `## Step N — <title>` headings + first ``` fence per block
+(appendRunStep's own format). Per-step observed cap 8000 chars, truncation tail
+points at the source file (`truncated: true`).
+
+## HTTP (server.js) — session-less, resolved via `?brain=<encoded abs path>`
+
+`resolveWatch` validates: absolute existing dir containing
+`features/feature_list.json`, and `featureExists`. Unknown feature → 404 JSON
+`{error, help}` listing known slugs. Never a stack trace.
+
+- `GET /watch/<feature>?brain=` → dashboard.html with `{{FEATURE}}` (HTML-escaped)
+  and `{{BRAIN}}` (URI-encoded) substituted; 503 JSON if dashboard.html missing.
+- `GET /watch/<feature>/context?brain=` → `{...watchContext, checks: brainCheck(brain)}`
+- `GET /watch/<feature>/shot/<rel>?brain=` → isAllowedShotRel + serveSandboxed
+- `GET /watch-events/<feature>?brain=` → SSE. Clients register in the shared
+  sseClients registry under key `watch:<brain>:<feature>` (idle accounting and
+  shutdown `chrome-reload` broadcasts cover them for free). One `context-update`
+  on connect; 150ms-debounced `context-update` from fs.watch on `<brain>/runs` +
+  `<brain>/features` (recursive darwin/win32, per-subdir fallback elsewhere);
+  watchers torn down with the key's last client.
+- `GET /dashboard.js` → static, no-cache.
+- `/session/<key>/context`: `execution` gains
+  `watch_url: "/watch/<feature>?brain=<enc>"` when the session has a feature.
+
+## Dashboard page behavior
+
+Editorial v7 palette, fixed light. Top-down: header (slug, status chip,
+evidence); lifecycle pipeline `plan approved → in-progress → run steps →
+verification → shipped → PR opened` (current = highest satisfied: pr →
+status shipped → any verification → any parsed step → status in-progress →
+else approved); PR terminal card (link, opened_at) when pr non-null; health
+strip from `checks`; run-step accordion (`<details>` per step, verbatim
+`<pre>`, open-state preserved across re-renders, latest step seeded open);
+verification verdict chips; checkpoint feed; screenshot thumbnail rail (shot
+route, new tab); footer connection dot. Every section has a one-line empty
+state. SSE `context-update` → 200ms-debounced refetch + re-render;
+`chrome-reload` → /health poll (500ms, 30s cap) then reload. Fetch failure
+renders a visible cannot-reach-server card. All payload strings rendered via
+textContent.
+
+## CLI
+
+- `brain watch <feature>` — flags `--no-open`, `--port <n>`. Feature must exist
+  (opError with known slugs). Ensures the server (same spawn/health/version path
+  as `brain review`), prints TOON `watch:` block {feature, status, url}, opens
+  the browser unless `--no-open`.
+- `brain pr <slug> --url <url>` — `--url` required, must match `^https?://`
+  (usage error otherwise). Writes pr.json via recordPr, appends checkpoint
+  `PR opened for <slug>: <url>` (url capped 120 in the summary). Re-running
+  overwrites. This is the dashboard's terminal state.
+- Chrome: ended + feature-bound session renders a "Watch execution →" chip
+  (composer, above status line) linking to `execution.watch_url`, new tab.
+- skillContent() and the `execute` playbook teach both verbs (open the
+  dashboard for the human at execution start; record the PR after `gh pr create`).
+
+## Verification
+
+.brain/features/brain-review/verifications/2026-07-16.md — PASS. Golden path:
+full render + live SSE proof (runs append appeared in an open page in <5s, no
+reload). Error path: unknown slug → 404 JSON with known slugs. Driver gotcha
+recorded there: SSE holds the connection open, so Playwright must use
+`waitUntil: "load"`, never `networkidle`.

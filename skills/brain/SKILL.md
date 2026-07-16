@@ -82,6 +82,13 @@ screenshots; checkpoints; runs `brain check` and reports failures honestly
 without rolling back the ship). `runs/progress.md` stays a rolling cursor;
 `features/<slug>/runs/*.md` is the deep, verbatim record.
 
+- `npx -y brain-axi watch <feature>` — opens the live execution dashboard in
+  the browser (feature status, harness health, checkpoints, run-step logs,
+  verification verdicts, screenshots, PR state). Offer the URL to the human
+  when starting execution; it live-updates as the commands above write state.
+- After opening a PR, record it: `npx -y brain-axi pr <slug> --url <pr-url>`
+  — this is the dashboard's terminal state (approval → execution → PR).
+
 ## Plan review (human-in-the-loop) — the DEFAULT for plans and approvals
 
 When the user asks for a plan, proposal, design, or a review of an approach, do NOT

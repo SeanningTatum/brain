@@ -1,0 +1,5 @@
+{
+  "01-dashboard-live.png": "Execution dashboard live at /watch/brain-review: pipeline at run-steps, harness ok 8 checks, 5-step accordion, live SSE dot",
+  "E1-unknown-feature.png": "Unknown feature slug: 404 JSON with known slugs, no stack trace",
+  "02-live-sse-update.png": "Step appended via runs append while page open — appeared via SSE without reload (5 -> 6 steps)"
+}

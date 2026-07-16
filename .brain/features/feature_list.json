@@ -1,6 +1,6 @@
 {
   "$schema": "Machine-readable feature state tracker. Source of truth for status; per-feature MD docs are source of truth for design/runtime.",
-  "updated": "2026-07-14",
+  "updated": "2026-07-16",
   "policy": {
     "one_in_progress_at_a_time": true,
     "definition_of_done": "implementation complete + verify-done passed (CLI invoked against .brain, exit codes + TOON eyeballed, stderr diagnostics-only) + feature MD updated + brain skill --check green + brain coherent"
@@ -15,7 +15,9 @@
       "dependencies": [],
       "status": "shipped",
       "evidence": "manual: `node bin/brain.js` + every subcommand run against fixture .brain, exit codes + TOON output eyeballed; `brain skill --check` green; committed in c1b0880 (first iteration).",
-      "owners": ["sean"]
+      "owners": [
+        "sean"
+      ]
     },
     {
       "id": "feat-002",
@@ -23,10 +25,14 @@
       "slug": "brain-review",
       "doc": ".brain/features/brain-review/brain-review.md",
       "description": "Localhost HTTP server + browser chrome + injected artifact SDK. Agent writes an HTML plan, opens a review session, long-polls for annotations/feedback, applies edits, loops. Plans/reviews/screenshots/verifications persist into .brain. Includes execution mode (runs append, check, ship).",
-      "dependencies": ["core-cli"],
-      "status": "in-progress",
-      "evidence": "WIP (uncommitted in lib/review/*, playbooks.js untracked). Contract: docs/REVIEW-ARCHITECTURE.md. Pending: verify-done browser walk + brain check green before ship.",
-      "owners": ["sean"]
+      "dependencies": [
+        "core-cli"
+      ],
+      "status": "shipped",
+      "evidence": "Execution dashboard verified PASS 2026-07-16: /watch/brain-review rendered all sections (pipeline, health 8/8, step accordion, checkpoints), runs-append appeared via SSE <5s no reload, unknown slug 404 with known slugs. Review flow regression: brain check 8/8 + skill --check green.",
+      "owners": [
+        "sean"
+      ]
     }
   ]
 }
