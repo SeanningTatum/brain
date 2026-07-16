@@ -2101,8 +2101,12 @@ without rolling back the ship). \`runs/progress.md\` stays a rolling cursor;
 
 - \`npx -y brain-axi watch <feature>\` — opens the live execution dashboard in
   the browser (feature status, harness health, checkpoints, run-step logs,
-  verification verdicts, screenshots, PR state). Offer the URL to the human
-  when starting execution; it live-updates as the commands above write state.
+  verification verdicts, screenshots, PR state). Run it UNPROMPTED as the first
+  act of execution, right after flipping the feature in-progress — the human
+  should never have to ask to see progress. Infer the slug; never ask for it:
+  the plan's bound feature (\`brain plans view <plan-slug>\`), else the single
+  in-progress feature (\`brain features\`), else the slug you are about to flip.
+  It live-updates as the commands above write state.
 - After opening a PR, record it: \`npx -y brain-axi pr <slug> --url <pr-url>\`
   — this is the dashboard's terminal state (approval → execution → PR).
 
