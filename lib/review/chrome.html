@@ -794,6 +794,27 @@
     cursor: not-allowed;
   }
 
+  /* ---- watch-execution handoff (v8) ---- */
+  /* Shown in the composer area only when the session is ended AND bound to a
+     feature — a hairline chip pointing at the execution dashboard. */
+
+  .watch-exec-link {
+    display: block;
+    text-align: center;
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--ink);
+    font-weight: 500;
+    text-decoration: none;
+  }
+
+  .watch-exec-link:hover { border-color: var(--ink); }
+
+  /* display:block above would defeat the UA's [hidden] rule — restate it. */
+  .watch-exec-link[hidden] { display: none; }
+
 </style>
 </head>
 <body>
@@ -872,6 +893,7 @@
           <div class="chat-list" id="chatList"></div>
         </div>
         <div class="composer" id="composer">
+          <a class="watch-exec-link" id="watchExecLink" hidden target="_blank" rel="noopener">Watch execution &#8594;</a>
           <div class="status-line" id="statusLine"></div>
           <textarea id="composerInput" rows="2" placeholder="Message the agent... (Enter to send, Shift+Enter for newline)"></textarea>
           <div class="composer-actions">
