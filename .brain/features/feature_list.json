@@ -1,6 +1,6 @@
 {
   "$schema": "Machine-readable feature state tracker. Source of truth for status; per-feature MD docs are source of truth for design/runtime.",
-  "updated": "2026-07-16",
+  "updated": "2026-07-17",
   "policy": {
     "one_in_progress_at_a_time": true,
     "definition_of_done": "implementation complete + verify-done passed (CLI invoked against .brain, exit codes + TOON eyeballed, stderr diagnostics-only) + feature MD updated + brain skill --check green + brain coherent"
@@ -30,6 +30,21 @@
       ],
       "status": "shipped",
       "evidence": "Execution dashboard verified PASS 2026-07-16: /watch/brain-review rendered all sections (pipeline, health 8/8, step accordion, checkpoints), runs-append appeared via SSE <5s no reload, unknown slug 404 with known slugs. Review flow regression: brain check 8/8 + skill --check green.",
+      "owners": [
+        "sean"
+      ]
+    },
+    {
+      "id": "feat-003",
+      "name": "shot-review — screenshot carousel + annotation",
+      "slug": "shot-review",
+      "doc": ".brain/features/shot-review/shot-review.md",
+      "description": "In-page lightbox carousel for screenshots on both review surfaces (/watch dashboard + review chrome exec sidebar) replacing one-tab-per-image, plus pin-and-note annotation on screenshots that flows back to the agent for the next review round.",
+      "dependencies": [
+        "brain-review"
+      ],
+      "status": "in-progress",
+      "evidence": "",
       "owners": [
         "sean"
       ]

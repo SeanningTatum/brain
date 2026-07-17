@@ -21,6 +21,14 @@
 
 ---
 
+## 2026-07-17 — Plan 2026-07-16-shot-carousel-annotation approved round 1 (D1-D4 all recommended): shared lightbox.js carousel on both surfaces, pin+note annotation, persist-to-brain for /watch, filmstrip. Lifecycle: shot re-capture supersedes old annotations. Starting execution as coordinator.
+- branch: `feat/shot-review-carousel`
+- in-progress feature: none
+- run note: none
+- next: Phase 1+2: lightbox component + wire both surfaces
+
+---
+
 ## 2026-07-16 — PR opened for brain-review: https://github.com/SeanningTatum/brain-axi/pull/2
 - branch: `feat/execution-dashboard`
 - in-progress feature: none
