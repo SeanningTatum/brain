@@ -25,4 +25,14 @@ VALID_TAGS) with target `{shot}` — annotation builds on that reserved slot.
 
 ## Status
 
-Planned — awaiting plan review round 1.
+Shipped 2026-07-17. Plan approved round 1 (D1 shared lightbox.js, D2 pin+note,
+D3 persist-to-brain + `shots notes` verb, D4 filmstrip; lifecycle: shot
+re-capture supersedes prior annotations). Verified PASS 2026-07-17 via
+Playwright walk of /watch/shot-review — see verifications/2026-07-17.md.
+
+## Changelog
+
+- 2026-07-17 `06c20d7` shared lightbox carousel on both surfaces
+- 2026-07-17 `84821ac` pin+note annotation, supersede lifecycle, /watch POST persistence
+- 2026-07-17 `11f1006` `brain shots notes` CLI verb + skill sync
+- 2026-07-17 verification PASS (golden 7/7 + E1 server-down), shipped

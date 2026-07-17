@@ -21,6 +21,13 @@
 
 ---
 
+## 2026-07-17 — shipped shot-review: Verification PASS 2026-07-17 (features/shot-review/verifications/2026-07-17.md): Playwright walk of /watch/shot-review —
+- branch: `feat/shot-review-carousel`
+- in-progress feature: none
+- run note: none
+
+---
+
 ## 2026-07-17 — Plan 2026-07-16-shot-carousel-annotation approved round 1 (D1-D4 all recommended): shared lightbox.js carousel on both surfaces, pin+note annotation, persist-to-brain for /watch, filmstrip. Lifecycle: shot re-capture supersedes old annotations. Starting execution as coordinator.
 - branch: `feat/shot-review-carousel`
 - in-progress feature: none

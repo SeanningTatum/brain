@@ -43,8 +43,8 @@
       "dependencies": [
         "brain-review"
       ],
-      "status": "in-progress",
-      "evidence": "",
+      "status": "shipped",
+      "evidence": "Verification PASS 2026-07-17 (features/shot-review/verifications/2026-07-17.md): Playwright walk of /watch/shot-review — lightbox opens in-page (pages() count asserted), arrow nav + filmstrip + counter, pin annotation POST 200 visible via shots notes (open, 39.9%,69.9%), Esc close, re-capture flips to superseded; E1 server-down shows inline error with note preserved. Zero jsErrors on golden path. skill --check + brain check green.",
       "owners": [
         "sean"
       ]
