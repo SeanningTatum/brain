@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Screenshot carousel + annotation — review surfaces</title>
+<style>
+  :root {
+    --bg: #faf9f5; --surface: #ffffff; --fg: #141413; --fg-secondary: #3d3d3a;
+    --muted: #73726c; --border: #dedcd1; --highlight: #fff7ca; --accent: #d97757;
+    --space-2: 8px; --space-3: 16px; --space-4: 24px; --space-6: 40px;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      Helvetica, Arial, sans-serif;
+    font-size: 16px; background: var(--bg); color: var(--fg); line-height: 1.6;
+    max-width: 72ch; margin: 0 auto; padding: var(--space-6) var(--space-4);
+  }
+  h1, h2, h3 {
+    font-family: Charter, "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+    font-weight: 600; line-height: 1.25; color: var(--fg);
+  }
+  h1 { font-size: 1.75em; }
+  h2 { font-size: 1.3em; font-weight: 500; margin-top: var(--space-6);
+    border-bottom: 1px solid var(--border); padding-bottom: var(--space-2); }
+  h3 { font-size: 1.05em; font-weight: 500; }
+  p, li { color: var(--fg-secondary); }
+  mark, .highlight { background: var(--highlight); color: var(--fg); padding: 0 2px; }
+  .chip { display: inline-block; padding: 2px 10px; border-radius: 999px;
+    font-size: 0.8em; font-weight: 600; border: 1px solid var(--border); }
+  .chip-status-draft { background: var(--surface); color: var(--muted); }
+  .chip-status-in-review { background: var(--highlight); color: var(--fg);
+    border-color: var(--highlight); }
+  .decision-card { background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: var(--space-4); margin: var(--space-4) 0; }
+  table { width: 100%; border-collapse: collapse; margin: var(--space-3) 0;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    overflow: hidden; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid
+    var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  .tag-recommended { color: var(--accent); font-weight: 600; }
+  .btn-queue { border: none; border-radius: 10px; padding: 8px 16px; font-weight: 600;
+    cursor: pointer; font-size: 0.95em; background: var(--fg); color: #fff; }
+  .queue-ack { margin-left: var(--space-3); font-size: 0.9em; color: var(--muted); }
+  .checklist { list-style: none; padding: 0; }
+  .checklist li { margin: var(--space-2) 0; }
+  pre.mermaid { text-align: center; }
+  pre.mermaid svg { display: block; margin: 0 auto; }
+  code { background: var(--surface); border: 1px solid var(--border);
+    border-radius: 4px; padding: 0 4px; font-size: 0.9em; }
+  .item-x, .item-restore, .list-add-btn { cursor: pointer; border: 1px solid var(--border);
+    background: var(--surface); border-radius: 6px; font-size: 0.85em; padding: 1px 8px;
+    color: var(--fg-secondary); }
+  [data-item-text] { cursor: text; }
+  .item-removed { opacity: 0.5; }
+  .item-removed [data-item-text] { text-decoration: line-through; }
+  .item-edited [data-item-text] { border-bottom: 2px dotted var(--accent); }
+  .item-badge { font-size: 0.75em; color: var(--muted); margin-left: 6px; font-style: italic; }
+  .item-badge-proposed { color: var(--accent); }
+  .item-proposed { border-left: 2px dashed var(--accent); padding-left: 6px; }
+  .list-add-row { display: flex; gap: 8px; margin-top: var(--space-2); }
+  .list-add-input { flex: 1; padding: 6px 10px; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--surface); color: var(--fg); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Screenshot carousel + annotation</h1>
+  <div>
+    <span>2026-07-16</span> ·
+    <span>feature: shot-review</span> ·
+    <span class="chip chip-status-draft">draft</span> ·
+    <span>round 0</span>
+  </div>
+</header>
+
+<section id="tldr">
+  <h2>TL;DR</h2>
+  <p>Screenshots on both review surfaces (the <code>/watch</code> execution dashboard
+  and the review chrome's execution sidebar) currently open one browser tab per image —
+  reviewing a 12-shot verification means 12 tabs. This plan replaces that with an
+  in-page <mark>lightbox carousel</mark> (arrows, keyboard nav, counter, captions)
+  shared by both surfaces, and adds <mark>pin-and-note annotation</mark> on any
+  screenshot so feedback lands back with the agent for the next review round.</p>
+</section>
+
+<section id="context">
+  <h2>Context</h2>
+  <p>Per plan <code>2026-07-16-execution-dashboard</code> (reviewed, 2 rounds, D1–D4 all
+  recommended), the <code>/watch/&lt;feature&gt;</code> dashboard shipped and
+  <code>brain-review</code> was flipped to shipped with a PASS verification on
+  2026-07-16; the last checkpoint records PR
+  <a href="https://github.com/SeanningTatum/brain-axi/pull/2">#2</a> opened. Both
+  features (<code>core-cli</code>, <code>brain-review</code>) are shipped — nothing is
+  in-progress, so a new <code>shot-review</code> feature slots in cleanly under the
+  one-in-progress policy.</p>
+  <p>What exists today, from the code:</p>
+  <ul>
+    <li><code>dashboard.js:328–349</code> — <code>renderShots</code> wraps each shot in
+      <code>&lt;a target="_blank"&gt;</code>. Every click is a new tab.</li>
+    <li><code>chrome.js:852–868</code> — exec-sidebar thumbnails call
+      <code>window.open(url, "_blank")</code>. Same tab explosion.</li>
+    <li><code>server.js:478,505</code> — the feedback pipeline <mark>already normalizes a
+      <code>screenshot</code> prompt tag</mark> with target <code>{shot}</code>, but no UI
+      produces it. Annotation has a reserved slot in the trust boundary already.</li>
+    <li><code>/watch</code> is deliberately <mark>session-less</mark> (brain path via
+      <code>?brain=</code>), so it has no feedback queue — annotating from the dashboard
+      needs a delivery decision (D3 below).</li>
+  </ul>
+</section>
+
+<section id="big-picture">
+  <h2>Big picture</h2>
+  <pre class="mermaid">
+flowchart TD
+  W["/watch dashboard<br/>(session-less)"] --> LB["lightbox.js<br/>shared carousel + pin/note UI"]
+  C["review chrome<br/>exec sidebar (session)"] --> LB
+  LB -->|"chrome: queue prompt<br/>tag: screenshot {shot,x,y}"| Q["composer feedback queue"]
+  Q -->|"review poll"| A["agent"]
+  LB -->|"watch: POST annotation"| J[".brain/features/&lt;slug&gt;/<br/>screenshots/annotations.json"]
+  J -->|"brain shots notes"| A
+  A -->|"fix, re-shoot, next round"| W
+  </pre>
+</section>
+
+<section id="decisions">
+  <h2>Decisions needed</h2>
+
+  <div class="decision-card" id="decision-component" data-brain-action>
+    <p><strong>1. Where does the carousel live?</strong> Both pages are served by the same
+    review server, so a shared asset is cheap.</p>
+    <table>
+      <thead><tr><th></th><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><input type="radio" name="decision-component" id="opt-shared"
+            value="Shared lib/review/lightbox.js served by the review server" checked data-brain-action></td>
+          <td><label for="opt-shared">Shared <code>lightbox.js</code>, one served asset
+            <span class="tag-recommended">(recommended)</span></label></td>
+          <td>One implementation, both surfaces stay in sync</td>
+          <td>One new static route on the server</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-component" id="opt-inline"
+            value="Duplicate inline per surface" data-brain-action></td>
+          <td><label for="opt-inline">Duplicate inline in dashboard.js and chrome.js</label></td>
+          <td>No new route</td>
+          <td>Two copies drift; ~300 lines duplicated</td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn-queue" data-brain-action
+      onclick="queueDecision('decision-component', 'Where does the carousel live?')">
+      Queue answer
+    </button>
+    <span class="queue-ack" id="ack-decision-component"></span>
+  </div>
+
+  <div class="decision-card" id="decision-annotation-shape" data-brain-action>
+    <p><strong>2. What does an annotation look like?</strong> All variants queue the same
+    <code>screenshot</code> tag; the target payload differs.</p>
+    <table>
+      <thead><tr><th></th><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><input type="radio" name="decision-annotation-shape" id="opt-pin"
+            value="Pin + note: click drops a marker at x/y%, note attached" checked data-brain-action></td>
+          <td><label for="opt-pin">Pin + note (click drops marker at x/y%)
+            <span class="tag-recommended">(recommended)</span></label></td>
+          <td>Precise enough to say "this button"; tiny payload <code>{shot,x,y}</code>; simple UI</td>
+          <td>Points, not regions</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-annotation-shape" id="opt-rect"
+            value="Rectangle region + note (drag to select area)" data-brain-action></td>
+          <td><label for="opt-rect">Rectangle region + note (drag-select)</label></td>
+          <td>Can mark whole areas</td>
+          <td>More UI state (drag, resize); bigger payload; harder on trackpads</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-annotation-shape" id="opt-whole"
+            value="Whole-screenshot note, no coordinates" data-brain-action></td>
+          <td><label for="opt-whole">Whole-shot note, no coordinates</label></td>
+          <td>Least UI; matches today's server target shape exactly</td>
+          <td>"The third card looks off" — agent has to guess where</td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn-queue" data-brain-action
+      onclick="queueDecision('decision-annotation-shape', 'What does an annotation look like?')">
+      Queue answer
+    </button>
+    <span class="queue-ack" id="ack-decision-annotation-shape"></span>
+  </div>
+
+  <div class="decision-card" id="decision-watch-delivery" data-brain-action>
+    <p><strong>3. How do annotations leave the session-less /watch dashboard?</strong>
+    In the review chrome this is solved — annotations join the composer queue and reach
+    the agent on <code>review poll</code>. <code>/watch</code> has no session.</p>
+    <table>
+      <thead><tr><th></th><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><input type="radio" name="decision-watch-delivery" id="opt-persist"
+            value="Persist to brain: POST writes annotations.json, new `brain shots notes` verb for the agent" checked data-brain-action></td>
+          <td><label for="opt-persist">Persist to the brain
+            (<code>annotations.json</code> + <code>brain shots notes</code> CLI verb)
+            <span class="tag-recommended">(recommended)</span></label></td>
+          <td>Annotations survive as harness state; agent reads them any time, review
+            session or not; fits the feature-centric layout</td>
+          <td>New POST route + CLI verb + skill sync</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-watch-delivery" id="opt-chrome-only"
+            value="Carousel only on /watch; annotation only inside review chrome sessions" data-brain-action></td>
+          <td><label for="opt-chrome-only">Carousel-only on /watch; annotate in chrome only</label></td>
+          <td>Zero new server/CLI surface</td>
+          <td>Your main viewing surface during execution can't collect feedback</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-watch-delivery" id="opt-bridge"
+            value="Bridge watch annotations into an open review session's feedback queue if one exists" data-brain-action></td>
+          <td><label for="opt-bridge">Bridge into an open review session's queue</label></td>
+          <td>Reuses poll delivery</td>
+          <td>Fails silently when no session is open; couples two surfaces</td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn-queue" data-brain-action
+      onclick="queueDecision('decision-watch-delivery', 'How do annotations leave the session-less /watch dashboard?')">
+      Queue answer
+    </button>
+    <span class="queue-ack" id="ack-decision-watch-delivery"></span>
+  </div>
+
+  <div class="decision-card" id="decision-filmstrip" data-brain-action>
+    <p><strong>4. Lightbox chrome: minimal or filmstrip?</strong></p>
+    <table>
+      <thead><tr><th></th><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><input type="radio" name="decision-filmstrip" id="opt-filmstrip"
+            value="Filmstrip: thumbnail strip along the bottom + arrows + keyboard + counter" checked data-brain-action></td>
+          <td><label for="opt-filmstrip">Filmstrip strip + arrows + keys + counter
+            <span class="tag-recommended">(recommended)</span></label></td>
+          <td>Jump straight to shot 9 of 12; see pass/fail (E-prefixed) shots at a glance</td>
+          <td>Slightly more layout work</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-filmstrip" id="opt-minimal"
+            value="Minimal: arrows + keyboard + counter only" data-brain-action></td>
+          <td><label for="opt-minimal">Minimal: arrows + keys + counter</label></td>
+          <td>Smallest surface</td>
+          <td>Linear-only navigation</td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn-queue" data-brain-action
+      onclick="queueDecision('decision-filmstrip', 'Lightbox chrome: minimal or filmstrip?')">
+      Queue answer
+    </button>
+    <span class="queue-ack" id="ack-decision-filmstrip"></span>
+  </div>
+</section>
+
+<section id="plan-of-record" data-brain-section="plan-of-record">
+  <h2>Plan of record</h2>
+  <p>Executed as a coordinator with Opus/Sonnet 5 sub-agents, one phase per agent,
+  commit per phase.</p>
+  <ol>
+    <template>
+      <li data-brain-item>
+        <span data-item-text data-brain-action></span>
+        <span class="item-controls">
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+        </span>
+      </li>
+    </template>
+    <li data-brain-item="0"><strong>Phase 1 — </strong><span data-item-text data-brain-action>
+      Lightbox component (per D1/D4): overlay with large image, prev/next arrows, ←/→/Esc
+      keys, "3 / 12" counter, caption from step name, filmstrip if D4. Acceptance: opening
+      any shot on either surface shows the overlay; arrow/keyboard nav works; Esc closes;
+      zero new tabs.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="1"><strong>Phase 2 — </strong><span data-item-text data-brain-action>
+      Wire both surfaces: dashboard.js renderShots and chrome.js exec thumbnails open the
+      lightbox instead of target="_blank"/window.open. Acceptance: manual walk on a live
+      review server + /watch page confirms both.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="2"><strong>Phase 3 — </strong><span data-item-text data-brain-action>
+      Annotation (per D2/D3): annotate mode in the lightbox; in chrome, queue a
+      screenshot-tagged prompt (extend server normalizeTarget with x/y); on /watch,
+      deliver per D3. Acceptance: annotation from chrome shows up in `review poll`
+      output; annotation from /watch reaches its D3 destination.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="3"><strong>Phase 4 — </strong><span data-item-text data-brain-action>
+      Agent-facing surface: `brain shots` lists annotation counts, new verb per D3 to read
+      them, skillContent() updated, `brain skill --check` green. Acceptance: TOON output
+      with help: next-steps; unknown flags rejected; skill check passes.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="4"><strong>Phase 5 — </strong><span data-item-text data-brain-action>
+      Verify + ship: browser-walk verification doc (dogfood — review this feature's own
+      screenshots in the new carousel), screenshots via `shots add`, `brain ship
+      shot-review --evidence ...`, then a fresh review round on this plan artifact.
+      Acceptance: verification PASS doc exists; brain check green.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+  </ol>
+  <div class="list-add-row" data-brain-section-add="plan-of-record">
+    <input type="text" class="list-add-input" data-brain-action placeholder="Add a phase..." />
+    <button type="button" class="list-add-btn" data-brain-action>+ Add item</button>
+  </div>
+</section>
+
+<section id="files-changed">
+  <h2>Files that change</h2>
+  <table>
+    <thead><tr><th>Path</th><th>Change</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>lib/review/lightbox.js</td><td>new</td>
+        <td>shared carousel + annotation overlay (D1)</td></tr>
+      <tr><td>lib/review/dashboard.html</td><td>edit</td>
+        <td>include lightbox script + styles</td></tr>
+      <tr><td>lib/review/dashboard.js</td><td>edit</td>
+        <td>renderShots opens lightbox, drop target="_blank"</td></tr>
+      <tr><td>lib/review/chrome.html</td><td>edit</td>
+        <td>include lightbox script + styles</td></tr>
+      <tr><td>lib/review/chrome.js</td><td>edit</td>
+        <td>exec thumbs open lightbox; annotations join composer queue</td></tr>
+      <tr><td>lib/review/server.js</td><td>edit</td>
+        <td>serve lightbox.js; extend screenshot target (x/y); D3 route if persist</td></tr>
+      <tr><td>lib/review/brain-data.js</td><td>edit (if D3 = persist)</td>
+        <td>read/write annotations.json under features/&lt;slug&gt;/screenshots/</td></tr>
+      <tr><td>bin/brain.js</td><td>edit (if D3 = persist)</td>
+        <td>new shots-notes verb + skillContent sync</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="golden-path">
+  <h2>Golden path</h2>
+  <pre class="mermaid">
+sequenceDiagram
+  participant H as Human
+  participant W as /watch dashboard
+  participant L as Lightbox
+  participant S as Review server
+  participant A as Agent
+  H->>W: opens brain watch shot-review
+  H->>L: clicks screenshot 03-carousel.png
+  L->>L: ← / → through all shots (one surface, zero tabs)
+  H->>L: annotate mode, pin at broken button, types note
+  L->>S: deliver annotation (queue or POST per D3)
+  A->>S: review poll / brain shots notes
+  A->>A: fixes, re-captures shot, shots add
+  W->>H: SSE refresh — new shot appears, next round
+  </pre>
+</section>
+
+<section id="error-paths" data-brain-section="error-paths">
+  <h2>Error paths</h2>
+  <table>
+    <tbody data-brain-section="error-paths-rows">
+      <tr><th>Failure</th><th>Detected by</th><th>Handled by</th><th>User sees</th></tr>
+      <template>
+        <tr data-brain-item>
+          <td colspan="4"><span data-item-text data-brain-action></span>
+            <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+            <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+          </td>
+        </tr>
+      </template>
+      <tr data-brain-item="0">
+        <td><span data-item-text data-brain-action>Shot file deleted after list render (img 404)</span></td>
+        <td>img onerror</td>
+        <td>placeholder tile, nav skips forward</td>
+        <td>"screenshot missing" tile, carousel keeps working
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></td>
+      </tr>
+      <tr data-brain-item="1">
+        <td><span data-item-text data-brain-action>Annotation POST fails (server stopped mid-review)</span></td>
+        <td>fetch rejects / non-2xx</td>
+        <td>inline error in the lightbox; note text kept in the box</td>
+        <td>"couldn't send — server offline", nothing lost
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></td>
+      </tr>
+      <tr data-brain-item="2">
+        <td><span data-item-text data-brain-action>Review session already ended when annotating in chrome</span></td>
+        <td>queue/send rejected by server</td>
+        <td>composer's existing ended-state handling</td>
+        <td>"session ended" notice; reopen with review --reopen
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></td>
+      </tr>
+      <tr data-brain-item="3">
+        <td><span data-item-text data-brain-action>annotations.json corrupt/hand-edited (if D3 = persist)</span></td>
+        <td>JSON.parse failure on read</td>
+        <td>CLI opError with the path; POST rewrites a fresh valid file</td>
+        <td>error: line + help: fix path; never a stack trace
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></td>
+      </tr>
+      <tr data-brain-item="4">
+        <td><span data-item-text data-brain-action>Arrow past first/last shot</span></td>
+        <td>index bounds check</td>
+        <td>clamp; arrow disabled at the end (no wrap)</td>
+        <td>arrow greys out at either end
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="testing-plan">
+  <h2>Testing plan</h2>
+  <p>No test framework in this repo — verified by browser walk against the live review
+  server + <code>.brain/</code>, per <code>brain playbook verify</code>.</p>
+  <ul class="checklist">
+    <li><label><input type="checkbox"> Golden path: /watch with 5+ shots — open, arrow
+      through all, Esc; confirm zero new tabs</label></li>
+    <li><label><input type="checkbox"> Same walk in review chrome exec sidebar</label></li>
+    <li><label><input type="checkbox"> Annotate in chrome → prompt appears in composer
+      queue → <code>review poll</code> shows tag screenshot with shot + x/y</label></li>
+    <li><label><input type="checkbox"> Annotate on /watch → lands per D3 (file written /
+      CLI verb lists it)</label></li>
+    <li><label><input type="checkbox"> Error path: kill server mid-annotation → inline
+      error, note preserved</label></li>
+    <li><label><input type="checkbox"> Error path: delete a shot file → placeholder tile,
+      nav still works</label></li>
+    <li><label><input type="checkbox"> Regression: decision cards + text annotation in the
+      plan iframe still work (lightbox key handlers must not swallow iframe
+      events)</label></li>
+    <li><label><input type="checkbox"> <code>brain skill --check</code> and
+      <code>brain check</code> green; stderr stays diagnostics-only</label></li>
+  </ul>
+</section>
+
+<section id="open-questions" data-brain-section="open-questions">
+  <h2>Open questions</h2>
+  <ul>
+    <template>
+      <li data-brain-item>
+        <span data-item-text data-brain-action></span>
+        <span class="item-controls">
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+        </span>
+      </li>
+    </template>
+    <li data-brain-item="0">
+      <span data-item-text data-brain-action>Zoom/pan inside the lightbox for tall
+        full-page screenshots — needed now, or a follow-up?</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="1">
+      <span data-item-text data-brain-action>Annotation lifecycle — should the agent be
+        able to mark an annotation "addressed" so the carousel shows resolved vs open?</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+  </ul>
+  <div class="list-add-row" data-brain-section-add="open-questions">
+    <input type="text" class="list-add-input" data-brain-action placeholder="Add an open question..." />
+    <button type="button" class="list-add-btn" data-brain-action>+ Add item</button>
+  </div>
+</section>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, theme: "neutral" });
+</script>
+
+<script>
+  function queueDecision(cardId, question) {
+    var card = document.getElementById(cardId);
+    var checked = card.querySelector('input[type="radio"]:checked');
+    if (!checked) return;
+    var choice = checked.value;
+    if (window.brain && typeof window.brain.queuePrompt === "function") {
+      window.brain.queuePrompt({
+        tag: "decision",
+        queueKey: cardId,
+        prompt: question + ": " + choice,
+        target: { type: "decision", question: question, choice: choice }
+      });
+    }
+    var ack = document.getElementById("ack-" + cardId);
+    if (ack) ack.textContent = "Queued: " + choice;
+  }
+
+  (function () {
+    function queueList(section, queueKey, prompt, action, item, index) {
+      if (window.brain && typeof window.brain.queuePrompt === "function") {
+        window.brain.queuePrompt({
+          tag: "list-edit",
+          queueKey: queueKey,
+          prompt: prompt,
+          target: { type: "list-edit", section: section, action: action, item: item, index: index }
+        });
+      }
+    }
+
+    function slugify(s) {
+      return String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "").slice(0, 60) || "item";
+    }
+
+    function itemText(el) {
+      var t = el.querySelector("[data-item-text]");
+      return (t || el).textContent.trim();
+    }
+
+    function addBadge(el, cls, label) {
+      var badge = el.querySelector("." + cls);
+      if (!badge) {
+        badge = document.createElement("span");
+        badge.className = "item-badge " + cls;
+        el.appendChild(badge);
+      }
+      badge.textContent = label;
+    }
+
+    function toggleRemoved(item, section) {
+      var index = Number(item.getAttribute("data-brain-item"));
+      var text = itemText(item);
+      var removed = item.classList.toggle("item-removed");
+      var xBtn = item.querySelector(".item-x");
+      var restoreBtn = item.querySelector(".item-restore");
+      if (xBtn) xBtn.hidden = removed;
+      if (restoreBtn) restoreBtn.hidden = !removed;
+      var key = section + ":remove:" + index;
+      if (removed) {
+        queueList(section, key, "Remove from " + section + ": \"" + text + "\"", "remove", text, index);
+      } else {
+        queueList(section, key, "Cancelled: keep \"" + text + "\" in " + section, "edit", text, index);
+      }
+    }
+
+    function startEdit(item, section) {
+      if (item.classList.contains("item-removed")) return;
+      var span = item.querySelector("[data-item-text]");
+      if (!span || span.isContentEditable) return;
+      var before = span.textContent;
+      span.setAttribute("contenteditable", "true");
+      span.focus();
+
+      function commit() {
+        span.removeAttribute("contenteditable");
+        span.removeEventListener("blur", commit);
+        span.removeEventListener("keydown", onKey);
+        var text = span.textContent.trim();
+        if (!text || text === before.trim()) { span.textContent = before; return; }
+        var index = Number(item.getAttribute("data-brain-item"));
+        addBadge(item, "item-badge-edited", "edited");
+        queueList(section, section + ":edit:" + index,
+          "Edit " + section + " item " + index + ": \"" + text + "\"", "edit", text, index);
+      }
+      function onKey(ev) {
+        if (ev.key === "Enter") { ev.preventDefault(); span.blur(); }
+        else if (ev.key === "Escape") { span.textContent = before; ev.preventDefault(); span.blur(); }
+      }
+      span.addEventListener("blur", commit);
+      span.addEventListener("keydown", onKey);
+    }
+
+    function commitAdd(addRow) {
+      var section = addRow.getAttribute("data-brain-section-add");
+      var input = addRow.querySelector(".list-add-input");
+      var text = input.value.trim();
+      if (!text) return;
+      var list = document.querySelector("[data-brain-section=\"" + section + "\"] ol, [data-brain-section=\"" + section + "\"] ul") ||
+                 document.querySelector("[data-brain-section=\"" + section + "\"]");
+      var tpl = list && list.querySelector("template");
+      if (!list || !tpl) return;
+      var node = document.importNode(tpl.content, true);
+      var item = node.querySelector("[data-brain-item]") || node.firstElementChild;
+      item.setAttribute("data-brain-item", "new");
+      var span = item.querySelector("[data-item-text]");
+      if (span) span.textContent = text;
+      item.classList.add("item-proposed");
+      addBadge(item, "item-badge-proposed", "proposed");
+      list.insertBefore(node, tpl.nextSibling);
+      input.value = "";
+      queueList(section, section + ":add:" + slugify(text),
+        "Add to " + section + ": \"" + text + "\"", "add", text, null);
+    }
+
+    document.addEventListener("click", function (ev) {
+      var xBtn = ev.target.closest(".item-x");
+      var restoreBtn = ev.target.closest(".item-restore");
+      if (xBtn || restoreBtn) {
+        var item = ev.target.closest("[data-brain-item]");
+        var section = ev.target.closest("[data-brain-section]");
+        if (item && section) toggleRemoved(item, section.getAttribute("data-brain-section"));
+        return;
+      }
+      var addBtn = ev.target.closest(".list-add-btn");
+      if (addBtn) {
+        var addRow = ev.target.closest("[data-brain-section-add]");
+        if (addRow) commitAdd(addRow);
+      }
+    });
+
+    document.addEventListener("dblclick", function (ev) {
+      var item = ev.target.closest("[data-brain-item]");
+      if (!item) return;
+      var section = item.closest("[data-brain-section]");
+      if (section) startEdit(item, section.getAttribute("data-brain-section"));
+    });
+
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key !== "Enter") return;
+      var addRow = ev.target.closest("[data-brain-section-add]");
+      if (addRow && ev.target.classList.contains("list-add-input")) {
+        ev.preventDefault();
+        commitAdd(addRow);
+      }
+    });
+  })();
+</script>
+
+</body>
+</html>

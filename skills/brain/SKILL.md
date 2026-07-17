@@ -53,7 +53,16 @@ this layout with the legacy flat one, so older brains keep working:
   `npx -y brain-axi playbook verify` (project-pinned playwright, or
   `npx -y playwright install chromium`), screenshot each step, add via
   `shots add`, delete the script.
-- `brain shots [<feature>]` — merged list (per-feature + legacy).
+- `brain shots [<feature>]` — merged list (per-feature + legacy); shows an
+  open-notes count per shot once any exist.
+- `npx -y brain-axi shots notes <feature>` — list reviewer pin+note
+  annotations dropped on a feature's screenshots from the `watch` carousel
+  (pin, note, timestamp, open/superseded, sent). Re-capturing a shot via
+  `shots add` supersedes its open annotations. The reviewer accumulates pins
+  freely (delete/adjust) and only hands a batch off with an explicit "Send to
+  Claude" click in the carousel — an unsent pin (sent: no) is still being
+  drafted, not yet ready to act on; only pins with a sent date are a settled
+  ask.
 - `brain review <plan.html> --feature <slug>` — binds the plan under that
   feature's `plans/` dir instead of the legacy fallback pool.
 

@@ -20,6 +20,7 @@ import {
   appendRunStep,
   brainCheck,
   recordPr,
+  listAnnotations,
 } from "../lib/review/brain-data.js";
 import { sessionKey, stateDir, listSessions } from "../lib/review/store.js";
 import { PLAYBOOKS } from "../lib/review/playbooks.js";
@@ -1645,7 +1646,31 @@ function cmdPlansView(argv) {
 function cmdShots(argv) {
   const sub = argv[0] && !argv[0].startsWith("--") ? argv[0] : null;
   if (sub === "add") return cmdShotsAdd(argv.slice(1));
+  if (sub === "notes") return cmdShotsNotes(argv.slice(1));
   return cmdShotsList(argv);
+}
+
+// Read a feature's open (non-superseded) annotation count per shot rel.
+// Cheap on the no-annotations path: listAnnotations is a single
+// fs.existsSync check when there's no annotations.json for that feature, and
+// this is called at most once per unique feature slug in the listing.
+function openNotesByRel(brain, features) {
+  const map = new Map();
+  let annotated = false;
+  for (const feature of features) {
+    let annotations;
+    try {
+      annotations = listAnnotations(brain, feature);
+    } catch (e) {
+      opError(e.message, [`Check .brain/features/${feature}/screenshots/annotations.json for valid JSON`]);
+    }
+    for (const a of annotations) {
+      if (a.superseded) continue;
+      annotated = true;
+      map.set(a.shot, (map.get(a.shot) || 0) + 1);
+    }
+  }
+  return { map, annotated };
 }
 
 function cmdShotsList(argv) {
@@ -1668,11 +1693,87 @@ function cmdShotsList(argv) {
     ]);
     return;
   }
-  const rows = shots.map((s) => ({ feature: s.feature || "", scope: s.scope || "", file: s.file, rel: s.rel, caption: s.caption }));
+  const features = [...new Set(shots.map((s) => s.feature).filter(Boolean))];
+  const { map: notesByRel, annotated } = openNotesByRel(brain, features);
+  const rows = shots.map((s) => {
+    const row = { feature: s.feature || "", scope: s.scope || "", file: s.file, rel: s.rel, caption: s.caption };
+    if (annotated) row.notes = notesByRel.get(s.rel) || 0;
+    return row;
+  });
+  const fields = annotated
+    ? ["feature", "scope", "file", "rel", "caption", "notes"]
+    : ["feature", "scope", "file", "rel", "caption"];
   print([
-    ...toonTable("shots", rows, ["feature", "scope", "file", "rel", "caption"]),
-    ...toonList("help", ["Run `brain plans view <slug>` or `brain review <plan.html> --feature <slug>` to see shots alongside a plan"]),
+    ...toonTable("shots", rows, fields),
+    ...toonList("help", [
+      "Run `brain plans view <slug>` or `brain review <plan.html> --feature <slug>` to see shots alongside a plan",
+      ...(annotated ? ["Run `brain shots notes <feature>` to read the pinned annotations"] : []),
+    ]),
   ]);
+}
+
+function cmdShotsNotes(argv) {
+  const { flags, positionals } = parseArgs(argv, {}, "shots notes");
+  if (flags.help)
+    helpBlock(
+      "shots notes",
+      "List reviewer pin+note annotations dropped on a feature's screenshots",
+      {},
+      ["brain shots notes authentication"],
+      ["<feature> — feature slug from `brain features`"]
+    );
+  const feature = positionals[0];
+  if (!feature) usageError("missing required argument <feature>", ["brain shots notes <feature>"]);
+  const brain = findBrain(flags.brain);
+  const list = loadFeatureList(brain);
+  const feat = list.features.find((f) => f.slug === feature || f.id === feature);
+  if (!feat) opError(`no feature "${feature}"`, [`known slugs: ${list.features.map((f) => f.slug).join(", ")}`]);
+
+  let annotations;
+  try {
+    annotations = listAnnotations(brain, feat.slug);
+  } catch (e) {
+    opError(e.message, [`Check .brain/features/${feat.slug}/screenshots/annotations.json for valid JSON`]);
+  }
+
+  if (!annotations.length) {
+    print([
+      `notes: 0 annotations for ${feat.slug}`,
+      ...toonList("help", [
+        `Run \`brain watch ${feat.slug}\` and pin a note on a screenshot in the carousel to create one`,
+        `Run \`brain shots ${feat.slug}\` to see this feature's screenshots`,
+      ]),
+    ]);
+    return;
+  }
+
+  const sorted = [...annotations].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+  const openCount = sorted.filter((a) => !a.superseded).length;
+  const supersededCount = sorted.length - openCount;
+  const unsentCount = sorted.filter((a) => !a.sentAt).length;
+  const rows = sorted.map((a) => ({
+    shot: a.shot,
+    pin: a.x != null && a.y != null ? `${a.x}%,${a.y}%` : "-",
+    note: truncateNote(a.note || "", 120),
+    at: a.at,
+    status: a.superseded ? "superseded" : "open",
+    sent: a.sentAt ? a.sentAt.slice(0, 10) : "no",
+  }));
+
+  print([
+    `notes: ${sorted.length} annotations for ${feat.slug} (${openCount} open, ${supersededCount} superseded, ${unsentCount} unsent)`,
+    ...toonTable("annotations", rows, ["shot", "pin", "note", "at", "status", "sent"]),
+    ...toonList("help", [
+      `Run \`brain watch ${feat.slug}\` to see these pins over the actual screenshots in the carousel`,
+      `Run \`brain shots add <img> --feature ${feat.slug} --step <NN-name>\` to re-capture a shot — this supersedes its open annotations`,
+      ...(unsentCount ? [`${unsentCount} pin(s) are still unsent drafts — the reviewer clicks "Send to Claude" in the carousel when ready`] : []),
+    ]),
+  ]);
+}
+
+function truncateNote(s, limit) {
+  if (!s || s.length <= limit) return s || "";
+  return s.slice(0, limit - 1) + "…";
 }
 
 const SHOT_EXTS = [".png", ".jpg", ".jpeg", ".gif", ".webp"];
@@ -2070,7 +2171,16 @@ this layout with the legacy flat one, so older brains keep working:
   \`npx -y brain-axi playbook verify\` (project-pinned playwright, or
   \`npx -y playwright install chromium\`), screenshot each step, add via
   \`shots add\`, delete the script.
-- \`brain shots [<feature>]\` — merged list (per-feature + legacy).
+- \`brain shots [<feature>]\` — merged list (per-feature + legacy); shows an
+  open-notes count per shot once any exist.
+- \`npx -y brain-axi shots notes <feature>\` — list reviewer pin+note
+  annotations dropped on a feature's screenshots from the \`watch\` carousel
+  (pin, note, timestamp, open/superseded, sent). Re-capturing a shot via
+  \`shots add\` supersedes its open annotations. The reviewer accumulates pins
+  freely (delete/adjust) and only hands a batch off with an explicit "Send to
+  Claude" click in the carousel — an unsent pin (sent: no) is still being
+  drafted, not yet ready to act on; only pins with a sent date are a settled
+  ask.
 - \`brain review <plan.html> --feature <slug>\` — binds the plan under that
   feature's \`plans/\` dir instead of the legacy fallback pool.
 

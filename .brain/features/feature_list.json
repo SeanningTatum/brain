@@ -1,6 +1,6 @@
 {
   "$schema": "Machine-readable feature state tracker. Source of truth for status; per-feature MD docs are source of truth for design/runtime.",
-  "updated": "2026-07-16",
+  "updated": "2026-07-17",
   "policy": {
     "one_in_progress_at_a_time": true,
     "definition_of_done": "implementation complete + verify-done passed (CLI invoked against .brain, exit codes + TOON eyeballed, stderr diagnostics-only) + feature MD updated + brain skill --check green + brain coherent"
@@ -30,6 +30,36 @@
       ],
       "status": "shipped",
       "evidence": "Execution dashboard verified PASS 2026-07-16: /watch/brain-review rendered all sections (pipeline, health 8/8, step accordion, checkpoints), runs-append appeared via SSE <5s no reload, unknown slug 404 with known slugs. Review flow regression: brain check 8/8 + skill --check green.",
+      "owners": [
+        "sean"
+      ]
+    },
+    {
+      "id": "feat-003",
+      "name": "shot-review — screenshot carousel + annotation",
+      "slug": "shot-review",
+      "doc": ".brain/features/shot-review/shot-review.md",
+      "description": "In-page lightbox carousel for screenshots on both review surfaces (/watch dashboard + review chrome exec sidebar) replacing one-tab-per-image, plus pin-and-note annotation on screenshots that flows back to the agent for the next review round.",
+      "dependencies": [
+        "brain-review"
+      ],
+      "status": "shipped",
+      "evidence": "Verification PASS 2026-07-17 (features/shot-review/verifications/2026-07-17.md): Playwright walk of /watch/shot-review — lightbox opens in-page (pages() count asserted), arrow nav + filmstrip + counter, pin annotation POST 200 visible via shots notes (open, 39.9%,69.9%), Esc close, re-capture flips to superseded; E1 server-down shows inline error with note preserved. Zero jsErrors on golden path. skill --check + brain check green.",
+      "owners": [
+        "sean"
+      ]
+    },
+    {
+      "id": "feat-004",
+      "name": "annotation-watch — post-ship feedback runner",
+      "slug": "annotation-watch",
+      "doc": ".brain/features/annotation-watch/annotation-watch.md",
+      "description": "Blocking `brain shots poll <feature>` runner the agent starts when a feature reaches shipped/PR state: waits for new reviewer pin-annotations from the /watch carousel and returns them TOON-formatted, closing the annotate→agent loop like review poll does for plans. Dashboard CTA reflects a live watcher.",
+      "dependencies": [
+        "shot-review"
+      ],
+      "status": "planned",
+      "evidence": "",
       "owners": [
         "sean"
       ]
