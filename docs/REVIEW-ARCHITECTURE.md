@@ -723,3 +723,212 @@ full render + live SSE proof (runs append appeared in an open page in <5s, no
 reload). Error path: unknown slug → 404 JSON with known slugs. Driver gotcha
 recorded there: SSE holds the connection open, so Playwright must use
 `waitUntil: "load"`, never `networkidle`.
+
+---
+
+# Addendum v9 — shot-review: lightbox carousel + pin annotations (2026-07-16 – 2026-07-17)
+
+Plan `2026-07-16-shot-carousel-annotation`, bound to feature `shot-review`,
+approved round 1, D1–D4 all at recommended: D1 a shared `lightbox.js` served to
+both surfaces, D2 pin+note annotation reusing the server's already-reserved
+`screenshot` prompt tag, D3 persist-to-brain (`annotations.json`) + `brain
+shots notes` verb, D4 filmstrip. Replaces the one-`<a target="_blank">`- or
+`window.open`-per-thumbnail behavior on both the `/watch` dashboard
+(`dashboard.js` `renderShots`) and the review chrome execution sidebar
+(`chrome.js` exec-shot thumbs). Verified PASS 2026-07-17 —
+`.brain/features/shot-review/verifications/2026-07-17.md` (golden path 7/7 +
+error path E1 server-down).
+
+## v9.1 Shared lightbox asset
+
+`lib/review/lightbox.js` — plain non-module browser script, one global:
+`window.BrainLightbox = { open(shots, index, opts), close() }`. `shots` is
+`[{url, caption, rel}]`; `rel` is the shot's brain-relative path, used to match
+annotations to a shot. Defines only the global at parse time (no DOM work
+until the first `open()`), so it is safe to load unconditionally on any page
+and to load twice (`if (window.BrainLightbox) return;` guard). Full-viewport
+overlay: topbar (counter, caption, resolved-count, Annotate toggle, Send
+button), prev/next arrows, filmstrip, a missing-screenshot placeholder, and a
+shared toast for both the post-pin CTA and the send-flow result. Keyboard:
+←/→ navigate, Esc cancels a pending pin then closes, both captured
+document-level only while open (never leak to the host page).
+
+Served identically to both surfaces:
+
+- `GET /lightbox.js` — static file, same pattern as `/chrome.js` (`serveStaticFile`).
+- Loaded by both `dashboard.html` (the `/watch` execution dashboard, Addendum
+  v8) and `chrome.html` (the review session's execution sidebar) — each adds a
+  `<script src="/lightbox.js">` tag; neither file appears in the top-of-doc
+  file-layout list (that list predates the `/watch` surface).
+
+The lightbox is **delivery-agnostic**: it owns pin-dropping, the note
+composer, rendering existing pins, and the unsent-count Send affordance, but
+knows nothing about how an annotation is persisted or transmitted — that's
+`opts.onAnnotate`, `opts.onDeleteAnnotation`, and `opts.onSendFeedback`
+(callbacks may return a Promise; rejection keeps the UI open with an inline
+error). This is what lets the two surfaces below wire the same component to
+two different backends.
+
+## v9.2 Annotation record + lifecycles (`brain-data.js`)
+
+Stored per-feature at `<brain>/features/<slug>/screenshots/annotations.json`,
+an array of:
+
+```json
+{
+  "id": "mrohz6ucr1l8pu",
+  "shot": "features/shot-review/screenshots/02-lightbox-open.png",
+  "x": 39.9,
+  "y": 69.9,
+  "note": "button misaligned — test pin",
+  "at": "2026-07-17T05:28:36.708Z",
+  "shotMtimeMs": 1784266116331.1284,
+  "shotSize": 104174,
+  "superseded": false,
+  "sentAt": null
+}
+```
+
+`shot` is the brain-root-relative rel (same shape as `listShots`' `rel`); `x`/`y`
+are percentages (0-100, one decimal) of the rendered image. `shotMtimeMs`/
+`shotSize` snapshot the shot file's `fs.stat` at pin time.
+
+- **Supersede lifecycle**: `superseded` is never stored truth — `listAnnotations`
+  recomputes it live on every read (`isSuperseded`): true if the shot file is
+  missing, or its current mtime/size differ from the values snapshotted at pin
+  time. Re-capturing a shot (`brain shots add` for the same feature/step,
+  which overwrites the file) is what flips this — recapture IS the resolution
+  signal; there is no separate "resolve" action or stored flag.
+- **Draft → sent lifecycle**: `sentAt` is `null` until `markAnnotationsSent`
+  stamps every currently-unsent record (regardless of `superseded` — a
+  superseded pin was still real feedback the reviewer chose to send) with one
+  shared ISO timestamp. Records written before this field existed have no
+  `sentAt` key at all; `listAnnotations` normalizes that absence to `null`
+  (`a.sentAt ?? null`) so callers get a strict null check.
+
+`brain-data.js` exports: `listAnnotations(brain, slug)`,
+`addAnnotation(brain, slug, {shot, x, y, note})` (validates the shot rel
+resolves under this feature's or the legacy screenshots tree, throws on
+unknown shot or a corrupt existing file, snapshots stats, returns the stored
+record), `removeAnnotation(brain, slug, id)` (throws if no record matches),
+`markAnnotationsSent(brain, slug)` (returns `{sent: <count>}`; a no-op batch
+leaves the file unwritten rather than rewritten byte-identical).
+`executionContext`/`planContext` map each annotation to
+`{id, shot, x, y, note, at, superseded, sentAt}` for both surfaces' lightboxes.
+
+## v9.3 `/watch` annotate routes (server.js)
+
+Three POST routes alongside the existing session-less `/watch/<feature>/*`
+family (Addendum v8), all guarded with `resolveWatch` (brain param + feature
+validation → 404 JSON on failure) **and** `isSameOrigin(req)` (403 JSON
+`{error: "cross-origin request refused"}` on a foreign `Origin`/`Referer` —
+these are browser-only routes, unlike `/api/open`/`/api/poll`/etc., so the
+guard is unconditional here, no CLI-caller exception).
+
+- `POST /watch/<feature>/annotate?brain=` — body `{shot, x, y, note}` →
+  `addAnnotation`. `200 {ok: true, annotation}` on success; `400 {error}` on
+  an unknown shot rel or a corrupt annotations file (keeps the lightbox's note
+  box open with the error rather than silently dropping the pin).
+- `POST /watch/<feature>/annotate/delete?brain=` — body `{id}` →
+  `removeAnnotation`. `200 {ok: true}`; `400 {error}` if no record matches
+  that id or the file is corrupt.
+- `POST /watch/<feature>/annotate/send?brain=` — no required body fields →
+  `markAnnotationsSent`. `200 {ok: true, sent: <count>}`; `400 {error}` on a
+  corrupt file.
+
+All three: `readJSONBody` failures also →  `400 {error}`. Route order in
+`ROUTES` is most-specific-path-first by convention only — the three patterns
+are `$`-anchored and non-overlapping, so match order is not load-bearing.
+
+## v9.4 Base contract update: `screenshot` target grows `x`/`y`/`note`
+
+The "Prompt shape" section at the top of this doc still shows the `screenshot`
+target as `{type: "screenshot", shot: "<rel path...>"}`. As of this addendum,
+`server.js`'s `normalizeTarget` (shared by every prompt-tag normalization,
+`VALID_TAGS` unchanged) extends that case to
+`{type: "screenshot", shot, x, y, note}`: `x`/`y` clamp to 0-100 (or `null` if
+non-finite — a screenshot prompt with no pin, e.g. a plain caption comment),
+`note` caps at 2000 chars. This is what lets a pinned annotation travel through
+the ordinary `POST /api/feedback` → `reviews.jsonl` path (chrome's delivery,
+v9.5 below) using the exact same normalization every other prompt tag gets —
+no separate wire format for pinned vs. unpinned screenshot feedback.
+
+## v9.5 Two delivery paths for the same pin
+
+The lightbox is one component; each host wires it to a different backend, per
+the plan's D3 (dashboard persists to the brain) vs. the chrome's existing
+composer/poll loop:
+
+- **Dashboard (`dashboard.js`)** — session-less, feature-scoped. `onAnnotate`
+  POSTs `/watch/<feature>/annotate`; the resolved server record (carrying
+  `id`) is merged into the lightbox's working annotation list, so a freshly
+  pinned annotation is immediately deletable without a reload.
+  `onDeleteAnnotation` POSTs `/watch/<feature>/annotate/delete`.
+  `onSendFeedback` (wired to the topbar "Send N pins to Claude" button and the
+  post-pin toast's action) POSTs `/watch/<feature>/annotate/send`. This is the
+  **draft-then-send** path: a pin is durable (in `annotations.json`) the
+  moment it's saved, but stays `sentAt: null` — and therefore invisible to the
+  "how many pins does the agent still need to see" count in `brain shots
+  notes` — until the reviewer explicitly sends the batch.
+- **Review chrome (`chrome.js`)** — session-bound, no `onSendFeedback`/
+  `onDeleteAnnotation` wired (delete is dashboard-only for round 1). This
+  surface never calls the annotate HTTP routes at all: `onAnnotate` is
+  `queueScreenshotAnnotation`, which pushes the pin straight into the SAME
+  pending-prompt queue the iframe's `brain:queuePrompt` path uses (client-side,
+  synchronous — the lightbox treats it as an immediate commit). It builds the
+  extended `screenshot` prompt shape:
+  ```json
+  {
+    "tag": "screenshot",
+    "prompt": "Screenshot <caption>: <note> (pin at <x>%, <y>%)",
+    "target": { "type": "screenshot", "shot": "<rel>", "x": 39.9, "y": 69.9, "note": "<note>" },
+    "queueKey": "shot:<rel>:<x>:<y>"
+  }
+  ```
+  extending the base `screenshot` target shape (`{type:"screenshot", shot}`,
+  see "Prompt shape" above) with `x`/`y`/`note`. `queueKey` coalesces repeated
+  pins at the same spot into one queued pill. It renders as a normal composer
+  pill and ships to the agent on the next Send, through the ordinary
+  `brain review poll` response — it is never written to
+  `annotations.json` and has no supersede/sent lifecycle; the review-round
+  `reviews.jsonl` history is its only persistence.
+
+## v9.6 CLI (`bin/brain.js`)
+
+- `brain shots notes <feature>` — required `<feature>` arg (usage error if
+  missing); resolves against `feature_list.json` by slug or id (opError with
+  known slugs if not found). Zero annotations → one-line `notes: 0
+  annotations for <slug>` + help pointing at `brain watch <slug>` (to create
+  one) and `brain shots <slug>` (to see the screenshots). Otherwise: summary
+  line `notes: <n> annotations for <slug> (<open> open, <superseded>
+  superseded, <unsent> unsent)`, then a TOON table
+  `annotations[N]{shot,pin,note,at,status,sent}` (newest first by `at`; `pin`
+  rendered `"<x>%,<y>%"`; `note` truncated to 120 chars with `…`; `status` is
+  `open`/`superseded`; `sent` is the sent date (`YYYY-MM-DD`) or `no`), then a
+  `help:` list — always the `brain watch` and re-capture-supersedes lines, plus
+  an unsent-count nudge only when `unsent > 0`.
+- `brain shots [<feature>]` (existing verb) gains a `notes` column — the open
+  (non-superseded) annotation count per shot — added to the table only when at
+  least one feature in the listing has any annotation at all (cheap check:
+  `listAnnotations` is a single `fs.existsSync` when there's no
+  `annotations.json`). When present, the `help:` list gains a line pointing at
+  `brain shots notes <feature>`.
+
+## v9.7 Fixture + verification
+
+`.brain/features/shot-review/` is the fixture for this addendum: a real
+`annotations.json` with one superseded test pin
+(`02-lightbox-open.png`, "button misaligned — test pin") backs the `brain
+shots notes shot-review` / `brain shots shot-review` examples throughout this
+doc and the README. Verification doc:
+`.brain/features/shot-review/verifications/2026-07-17.md` (PASS).
+
+## v9.8 Backlog (planned, not shipped)
+
+Feature `annotation-watch` (plan stage, not yet approved): a `brain shots poll
+<feature>` long-poll runner — mirroring `brain review poll` — so a pin dropped
+on the `/watch` dashboard wakes a waiting agent immediately instead of relying
+on it to happen to re-run `brain shots notes`. The dashboard also grows an
+in-page "Annotations" section (list + resolved/open badges) reusing the same
+carousel via the shots-payload-by-`rel` match — not yet on `main` as of this
+addendum.
