@@ -1750,20 +1750,23 @@ function cmdShotsNotes(argv) {
   const sorted = [...annotations].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
   const openCount = sorted.filter((a) => !a.superseded).length;
   const supersededCount = sorted.length - openCount;
+  const unsentCount = sorted.filter((a) => !a.sentAt).length;
   const rows = sorted.map((a) => ({
     shot: a.shot,
     pin: a.x != null && a.y != null ? `${a.x}%,${a.y}%` : "-",
     note: truncateNote(a.note || "", 120),
     at: a.at,
     status: a.superseded ? "superseded" : "open",
+    sent: a.sentAt ? a.sentAt.slice(0, 10) : "no",
   }));
 
   print([
-    `notes: ${sorted.length} annotations for ${feat.slug} (${openCount} open, ${supersededCount} superseded)`,
-    ...toonTable("annotations", rows, ["shot", "pin", "note", "at", "status"]),
+    `notes: ${sorted.length} annotations for ${feat.slug} (${openCount} open, ${supersededCount} superseded, ${unsentCount} unsent)`,
+    ...toonTable("annotations", rows, ["shot", "pin", "note", "at", "status", "sent"]),
     ...toonList("help", [
       `Run \`brain watch ${feat.slug}\` to see these pins over the actual screenshots in the carousel`,
       `Run \`brain shots add <img> --feature ${feat.slug} --step <NN-name>\` to re-capture a shot — this supersedes its open annotations`,
+      ...(unsentCount ? [`${unsentCount} pin(s) are still unsent drafts — the reviewer clicks "Send to Claude" in the carousel when ready`] : []),
     ]),
   ]);
 }
@@ -2172,8 +2175,12 @@ this layout with the legacy flat one, so older brains keep working:
   open-notes count per shot once any exist.
 - \`npx -y brain-axi shots notes <feature>\` — list reviewer pin+note
   annotations dropped on a feature's screenshots from the \`watch\` carousel
-  (pin, note, timestamp, open/superseded). Re-capturing a shot via
-  \`shots add\` supersedes its open annotations.
+  (pin, note, timestamp, open/superseded, sent). Re-capturing a shot via
+  \`shots add\` supersedes its open annotations. The reviewer accumulates pins
+  freely (delete/adjust) and only hands a batch off with an explicit "Send to
+  Claude" click in the carousel — an unsent pin (sent: no) is still being
+  drafted, not yet ready to act on; only pins with a sent date are a settled
+  ask.
 - \`brain review <plan.html> --feature <slug>\` — binds the plan under that
   feature's \`plans/\` dir instead of the legacy fallback pool.
 

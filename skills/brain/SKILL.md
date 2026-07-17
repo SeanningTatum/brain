@@ -1,6 +1,6 @@
 ---
 name: brain
-description: "Query and update a repo's .brain agent harness (features, progress checkpoints, rules, recipes, run notes, human plan reviews). Use when working in a repo with a .brain directory — before starting a task (read state), during (search docs/rules), and after (checkpoint progress, flip feature status). ALSO use whenever the user asks for a plan, proposal, design, or review of an approach: write the plan as an HTML artifact and open an interactive brain review session in their browser instead of printing the plan in chat."
+description: Query and update a repo's .brain agent harness (features, progress checkpoints, rules, recipes, run notes, human plan reviews). Use when working in a repo with a .brain directory — before starting a task (read state), during (search docs/rules), and after (checkpoint progress, flip feature status). ALSO use whenever the user asks for a plan, proposal, design, or review of an approach: write the plan as an HTML artifact and open an interactive brain review session in their browser instead of printing the plan in chat.
 ---
 
 # brain — .brain harness CLI
@@ -57,8 +57,12 @@ this layout with the legacy flat one, so older brains keep working:
   open-notes count per shot once any exist.
 - `npx -y brain-axi shots notes <feature>` — list reviewer pin+note
   annotations dropped on a feature's screenshots from the `watch` carousel
-  (pin, note, timestamp, open/superseded). Re-capturing a shot via
-  `shots add` supersedes its open annotations.
+  (pin, note, timestamp, open/superseded, sent). Re-capturing a shot via
+  `shots add` supersedes its open annotations. The reviewer accumulates pins
+  freely (delete/adjust) and only hands a batch off with an explicit "Send to
+  Claude" click in the carousel — an unsent pin (sent: no) is still being
+  drafted, not yet ready to act on; only pins with a sent date are a settled
+  ask.
 - `brain review <plan.html> --feature <slug>` — binds the plan under that
   feature's `plans/` dir instead of the legacy fallback pool.
 
