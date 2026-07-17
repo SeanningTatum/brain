@@ -21,6 +21,21 @@
 
 ---
 
+## 2026-07-17 — shot-review PR opened: https://github.com/SeanningTatum/brain-axi/pull/4 — carousel + annotation + CTA toast + shots notes verb, all verified. Pre-PR review inline (Greptile down, org spend limit blocked workflow review); 1 finding fixed (3f71dca).
+- branch: `feat/shot-review-carousel`
+- in-progress feature: none
+- run note: none
+- next: Await PR review/merge; optional follow-ups: lightbox zoom/pan, chrome annotations persisting to annotations.json
+
+---
+
+## 2026-07-17 — PR opened for shot-review: https://github.com/SeanningTatum/brain-axi/pull/4
+- branch: `feat/shot-review-carousel`
+- in-progress feature: none
+- run note: none
+
+---
+
 ## 2026-07-17 — shipped shot-review: Verification PASS 2026-07-17 (features/shot-review/verifications/2026-07-17.md): Playwright walk of /watch/shot-review —
 - branch: `feat/shot-review-carousel`
 - in-progress feature: none
