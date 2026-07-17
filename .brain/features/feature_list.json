@@ -48,6 +48,21 @@
       "owners": [
         "sean"
       ]
+    },
+    {
+      "id": "feat-004",
+      "name": "annotation-watch — post-ship feedback runner",
+      "slug": "annotation-watch",
+      "doc": ".brain/features/annotation-watch/annotation-watch.md",
+      "description": "Blocking `brain shots poll <feature>` runner the agent starts when a feature reaches shipped/PR state: waits for new reviewer pin-annotations from the /watch carousel and returns them TOON-formatted, closing the annotate→agent loop like review poll does for plans. Dashboard CTA reflects a live watcher.",
+      "dependencies": [
+        "shot-review"
+      ],
+      "status": "planned",
+      "evidence": "",
+      "owners": [
+        "sean"
+      ]
     }
   ]
 }

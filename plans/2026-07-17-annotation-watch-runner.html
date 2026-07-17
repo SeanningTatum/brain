@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>annotation-watch — post-ship feedback runner</title>
+<style>
+  :root {
+    --bg: #faf9f5; --surface: #ffffff; --fg: #141413; --fg-secondary: #3d3d3a;
+    --muted: #73726c; --border: #dedcd1; --highlight: #fff7ca; --accent: #d97757;
+    --space-2: 8px; --space-3: 16px; --space-4: 24px; --space-6: 40px;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      Helvetica, Arial, sans-serif;
+    font-size: 16px; background: var(--bg); color: var(--fg); line-height: 1.6;
+    max-width: 72ch; margin: 0 auto; padding: var(--space-6) var(--space-4);
+  }
+  h1, h2, h3 {
+    font-family: Charter, "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+    font-weight: 600; line-height: 1.25; color: var(--fg);
+  }
+  h1 { font-size: 1.75em; }
+  h2 { font-size: 1.3em; font-weight: 500; margin-top: var(--space-6);
+    border-bottom: 1px solid var(--border); padding-bottom: var(--space-2); }
+  p, li { color: var(--fg-secondary); }
+  mark, .highlight { background: var(--highlight); color: var(--fg); padding: 0 2px; }
+  .chip { display: inline-block; padding: 2px 10px; border-radius: 999px;
+    font-size: 0.8em; font-weight: 600; border: 1px solid var(--border); }
+  .chip-status-draft { background: var(--surface); color: var(--muted); }
+  .decision-card { background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: var(--space-4); margin: var(--space-4) 0; }
+  table { width: 100%; border-collapse: collapse; margin: var(--space-3) 0;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    overflow: hidden; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid
+    var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  .tag-recommended { color: var(--accent); font-weight: 600; }
+  .btn-queue { border: none; border-radius: 10px; padding: 8px 16px; font-weight: 600;
+    cursor: pointer; font-size: 0.95em; background: var(--fg); color: #fff; }
+  .queue-ack { margin-left: var(--space-3); font-size: 0.9em; color: var(--muted); }
+  .checklist { list-style: none; padding: 0; }
+  .checklist li { margin: var(--space-2) 0; }
+  pre.mermaid { text-align: center; }
+  pre.mermaid svg { display: block; margin: 0 auto; }
+  code { background: var(--surface); border: 1px solid var(--border);
+    border-radius: 4px; padding: 0 4px; font-size: 0.9em; }
+  .item-x, .item-restore, .list-add-btn { cursor: pointer; border: 1px solid var(--border);
+    background: var(--surface); border-radius: 6px; font-size: 0.85em; padding: 1px 8px;
+    color: var(--fg-secondary); }
+  [data-item-text] { cursor: text; }
+  .item-removed { opacity: 0.5; }
+  .item-removed [data-item-text] { text-decoration: line-through; }
+  .item-edited [data-item-text] { border-bottom: 2px dotted var(--accent); }
+  .item-badge { font-size: 0.75em; color: var(--muted); margin-left: 6px; font-style: italic; }
+  .item-badge-proposed { color: var(--accent); }
+  .item-proposed { border-left: 2px dashed var(--accent); padding-left: 6px; }
+  .list-add-row { display: flex; gap: 8px; margin-top: var(--space-2); }
+  .list-add-input { flex: 1; padding: 6px 10px; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--surface); color: var(--fg); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>annotation-watch — post-ship feedback runner</h1>
+  <div>
+    <span>2026-07-17</span> ·
+    <span>feature: annotation-watch</span> ·
+    <span class="chip chip-status-draft">draft</span> ·
+    <span>round 0</span>
+  </div>
+</header>
+
+<section id="tldr">
+  <h2>TL;DR</h2>
+  <p>Pins dropped on the <code>/watch</code> dashboard persist correctly but
+  <mark>nothing wakes the agent</mark> — feedback strands in
+  <code>annotations.json</code> until someone happens to run <code>shots notes</code>.
+  This plan adds <mark><code>brain watch poll &lt;feature&gt;</code></mark>, a blocking
+  runner built exactly like <code>review poll</code> — it long-polls the review server,
+  and the reviewer's <em>Send to Claude</em> click resolves it with the sent batch. The
+  agent starts it when a feature reaches the shipped/PR state; while connected the
+  dashboard shows an "agent watching" badge and the post-send toast says feedback was
+  picked up live — the same feedback-round experience the plan phase already has.</p>
+</section>
+
+<section id="context">
+  <h2>Context</h2>
+  <p>shot-review shipped 2026-07-17 (PR
+  <a href="https://github.com/SeanningTatum/brain-axi/pull/4">#4</a>) with pin+note
+  annotation on both surfaces. Tracing the loop end-to-end found an asymmetry:</p>
+  <ul>
+    <li><strong>Chrome (plan phase)</strong>: annotation → composer queue → Send →
+      <code>review poll</code> returns it. Closed loop; the CTA toast points at Send.</li>
+    <li><strong>/watch (execution/shipped phase)</strong>: annotation → POST →
+      <code>annotations.json</code> → <mark>silence</mark>. No proactive surface
+      (home, progress, watchContext, playbooks) mentions open annotations; only
+      <code>brain shots</code> shows a count if the agent happens to run it.</li>
+  </ul>
+  <p>The dashboard's pipeline already renders a terminal <em>shipped → PR opened</em>
+  state (execution-dashboard plan, D1–D4, 2026-07-16) — exactly the moment a human
+  starts reviewing screenshots and pinning feedback, and exactly when the agent has
+  stopped listening today.</p>
+</section>
+
+<section id="big-picture">
+  <h2>Big picture</h2>
+  <pre class="mermaid">
+flowchart TD
+  S["feature shipped / PR opened"] --> R["agent runs<br/>brain watch poll &lt;feature&gt;"]
+  R -->|"long-poll GET /watch/&lt;f&gt;/poll"| SV["review server"]
+  SV -->|"agent_watching → SSE"| D["/watch dashboard<br/>badge: agent watching"]
+  U["human pins drafts, clicks<br/>Send to Claude"] -->|"POST annotate/send"| SV
+  SV -->|"stamps sentAt, resolves poll<br/>with batch, stamps deliveredAt"| R
+  R -->|"TOON: sent annotations + next steps"| A["agent fixes, re-captures shot<br/>(supersedes pin), polls again"]
+  D -->|"toast: 'Sent — Claude is watching, picked up live'"| U
+  </pre>
+</section>
+
+<section id="decisions">
+  <h2>Decisions needed</h2>
+
+  <div class="decision-card" id="decision-transport" data-brain-action>
+    <p><strong>1. How does the runner get woken + how does the dashboard know it's there?</strong>
+    <mark>DECIDED (user, in chat): server long-poll, exactly like review poll.</mark>
+    The runner connects to the same review server the dashboard runs on; presence is
+    instant (a connected poller = agent watching); clicking <em>Send to Claude</em>
+    resolves the waiting poll with the sent batch — the plan phase's composer→poll
+    contract, applied to features. The earlier heartbeat-file idea predated the Send
+    step and is dropped: pins can only be created through the running server anyway,
+    so "works without a server" bought nothing.</p>
+    <table>
+      <thead><tr><th>Mechanism piece</th><th>Mirrors (plan phase)</th></tr></thead>
+      <tbody>
+        <tr><td><code>brain watch poll &lt;feature&gt;</code> blocks on
+          <code>GET /watch/&lt;feature&gt;/poll?brain=…</code></td>
+          <td><code>review poll</code> long-poll</td></tr>
+        <tr><td>Send button POST resolves the waiting poll with the batch of
+          newly-sent annotations; each is stamped <code>deliveredAt</code> on
+          hand-off so a re-run never double-delivers and undelivered sent batches
+          survive a dead poller (poll drains them on connect)</td>
+          <td>composer Send → queueFeedback → poll return + recorded round</td></tr>
+        <tr><td>Server tracks connected pollers per feature; watchContext exposes
+          <code>agent_watching</code>; existing SSE pushes it to the dashboard</td>
+          <td>session presence</td></tr>
+        <tr><td>No server running → CLI opError with
+          <code>help: run \`brain watch &lt;feature&gt;\` first</code></td>
+          <td>review poll without a session</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="decision-card" id="decision-start" data-brain-action>
+    <p><strong>2. How does the runner get started at the shipped section?</strong></p>
+    <table>
+      <thead><tr><th></th><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><input type="radio" name="decision-start" id="opt-playbook"
+            value="Guidance-driven: ship/pr help lines + execute playbook instruct the agent to run shots poll after shipping" checked data-brain-action></td>
+          <td><label for="opt-playbook">Guidance-driven (help lines + playbook)
+            <span class="tag-recommended">(recommended)</span></label></td>
+          <td>AXI-native — the tool teaches through its output; agent stays in
+            control of its own foreground; no orphan processes</td>
+          <td>Relies on the agent following the help (it follows help today)</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-start" id="opt-autospawn"
+            value="brain ship auto-spawns a detached background watcher process" data-brain-action></td>
+          <td><label for="opt-autospawn">Auto-spawn a daemon on <code>brain ship</code></label></td>
+          <td>Nothing to remember</td>
+          <td>Orphan daemons, lifecycle/cleanup mess, output goes nowhere the agent reads</td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn-queue" data-brain-action
+      onclick="queueDecision('decision-start', 'How does the runner get started at the shipped section?')">
+      Queue answer
+    </button>
+    <span class="queue-ack" id="ack-decision-start"></span>
+  </div>
+
+  <div class="decision-card" id="decision-awareness" data-brain-action>
+    <p><strong>3. What does the dashboard show while a runner is attached?</strong></p>
+    <table>
+      <thead><tr><th></th><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><input type="radio" name="decision-awareness" id="opt-badge-toast"
+            value="Header badge ('agent watching') + post-pin toast variant ('picked up live — watch the run steps')" checked data-brain-action></td>
+          <td><label for="opt-badge-toast">Badge + toast variant
+            <span class="tag-recommended">(recommended)</span></label></td>
+          <td>Reviewer sees the live loop before pinning (badge) and after (toast) —
+            mirrors the plan phase's queued/sent feedback</td>
+          <td>Two small UI touches instead of one</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-awareness" id="opt-toast-only"
+            value="Toast variant only" data-brain-action></td>
+          <td><label for="opt-toast-only">Toast variant only</label></td>
+          <td>One touch</td>
+          <td>No signal until after the first pin</td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn-queue" data-brain-action
+      onclick="queueDecision('decision-awareness', 'What does the dashboard show while a runner is attached?')">
+      Queue answer
+    </button>
+    <span class="queue-ack" id="ack-decision-awareness"></span>
+  </div>
+
+  <div class="decision-card" id="decision-nudge" data-brain-action>
+    <p><strong>4. Also surface open-annotation counts on <code>brain</code> home +
+    <code>brain progress</code>?</strong> Safety net for pins dropped while no runner
+    was attached — the agent reads both unprompted at session start.</p>
+    <table>
+      <thead><tr><th></th><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><input type="radio" name="decision-nudge" id="opt-nudge-yes"
+            value="Yes: home + progress print open-annotations line when any exist" checked data-brain-action></td>
+          <td><label for="opt-nudge-yes">Yes — home + progress nudge
+            <span class="tag-recommended">(recommended)</span></label></td>
+          <td>No pin can strand across sessions; zero cost when none exist</td>
+          <td>One more line on two surfaces</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-nudge" id="opt-nudge-no"
+            value="No: runner only" data-brain-action></td>
+          <td><label for="opt-nudge-no">No — runner only</label></td>
+          <td>Tighter scope</td>
+          <td>Pins dropped between sessions still strand</td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn-queue" data-brain-action
+      onclick="queueDecision('decision-nudge', 'Also surface open-annotation counts on brain home + progress?')">
+      Queue answer
+    </button>
+    <span class="queue-ack" id="ack-decision-nudge"></span>
+  </div>
+</section>
+
+<section id="plan-of-record" data-brain-section="plan-of-record">
+  <h2>Plan of record</h2>
+  <p>Coordinator + Opus/Sonnet 5 sub-agents, one phase per agent, commit per phase,
+  on a new branch <code>feat/annotation-watch</code> stacked on
+  <code>feat/shot-review-carousel</code> (PR #4).</p>
+  <ol>
+    <template>
+      <li data-brain-item>
+        <span data-item-text data-brain-action></span>
+        <span class="item-controls">
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+        </span>
+      </li>
+    </template>
+    <li data-brain-item="0"><strong>Phase 1 — </strong><span data-item-text data-brain-action>
+      Runner CLI + server (per D1/D2): `brain watch poll &lt;feature&gt;` — blocking,
+      mirrors `review poll`: long-polls GET /watch/&lt;feature&gt;/poll on the review
+      server; on connect first drains any sent-but-undelivered annotations
+      (sentAt set, deliveredAt null), else waits until Send resolves it; each
+      delivered record stamped deliveredAt; --timeout (default 600s) exits 0 with
+      status: timeout + re-run help; no server → opError + `brain watch` help.
+      TOON output ends with the CTA help loop: apply fix → shots add (supersedes)
+      → poll again. skillContent sync. Acceptance: Send resolves a waiting poll
+      &lt;2s; drain-on-connect works; timeout/unknown-feature/no-server paths
+      verified; re-run never double-delivers; skill --check green.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="1"><strong>Phase 2 — </strong><span data-item-text data-brain-action>
+      Dashboard awareness (per D1/D3): server tracks connected pollers per feature;
+      watchContext exposes agent_watching (live — a connected poll IS presence);
+      dashboard header badge "agent watching"; lightbox annotatedCta/send toast
+      switch to the live variant when agent_watching. Badge toggles via the existing
+      context SSE without reload. Acceptance: badge appears on poll connect and
+      clears on disconnect (SSE-fast, no TTL lag); toast variant correct in both
+      states.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="2"><strong>Phase 3 — </strong><span data-item-text data-brain-action>
+      Shipped-section integration (per D2/D4): `brain ship` and `brain pr` help lines
+      nudge `shots poll`; execute playbook gains the post-ship watch step; home +
+      progress print an open-annotations line when any exist (D4). skill sync.
+      Acceptance: help lines present; home/progress line appears only with open
+      annotations; skill --check + brain check green.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="3"><strong>Phase 4 — </strong><span data-item-text data-brain-action>
+      Verify + ship: Playwright walk — runner attached, badge visible, pin a note,
+      poll returns it live, re-capture supersedes, badge clears after runner exit;
+      E1 error path; verification doc; brain ship annotation-watch --evidence.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+  </ol>
+  <div class="list-add-row" data-brain-section-add="plan-of-record">
+    <input type="text" class="list-add-input" data-brain-action placeholder="Add a phase..." />
+    <button type="button" class="list-add-btn" data-brain-action>+ Add item</button>
+  </div>
+</section>
+
+<section id="files-changed">
+  <h2>Files that change</h2>
+  <table>
+    <thead><tr><th>Path</th><th>Change</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>bin/brain.js</td><td>edit</td>
+        <td>shots poll verb; ship/pr help lines; home/progress nudge; skillContent</td></tr>
+      <tr><td>lib/review/brain-data.js</td><td>edit</td>
+        <td>deliveredAt stamping + undelivered-sent query; agent_watching in contexts; open-count helper</td></tr>
+      <tr><td>lib/review/server.js</td><td>edit</td>
+        <td>GET /watch/&lt;feature&gt;/poll long-poll route; poller registry; Send resolves waiting polls</td></tr>
+      <tr><td>lib/review/dashboard.js</td><td>edit</td>
+        <td>badge render; annotatedCta live variant</td></tr>
+      <tr><td>lib/review/dashboard.html</td><td>edit</td>
+        <td>badge element/styles</td></tr>
+      <tr><td>lib/review/playbooks.js</td><td>edit</td>
+        <td>execute playbook post-ship watch step</td></tr>
+      <tr><td>skills/brain/SKILL.md</td><td>regen</td>
+        <td>skill --check sync</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="golden-path">
+  <h2>Golden path</h2>
+  <pre class="mermaid">
+sequenceDiagram
+  participant A as Agent
+  participant S as Review server
+  participant H as Human
+  A->>A: brain ship feature (help: run watch poll)
+  A->>S: brain watch poll — long-poll connects
+  S->>H: SSE — dashboard badge "agent watching"
+  H->>S: pins drafts, clicks Send to Claude
+  S->>S: stamps sentAt + deliveredAt, resolves poll
+  S->>A: TOON — sent annotations + next steps
+  S->>H: toast "Sent — Claude picked it up live"
+  A->>A: fix + shots add (supersedes pin)
+  A->>S: poll again — loop continues
+  </pre>
+</section>
+
+<section id="error-paths" data-brain-section="error-paths">
+  <h2>Error paths</h2>
+  <table>
+    <tbody data-brain-section="error-paths-rows">
+      <tr><th>Failure</th><th>Detected by</th><th>Handled by</th><th>User sees</th></tr>
+      <template>
+        <tr data-brain-item>
+          <td colspan="4"><span data-item-text data-brain-action></span>
+            <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+            <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+          </td>
+        </tr>
+      </template>
+      <tr data-brain-item="0">
+        <td><span data-item-text data-brain-action>Runner killed (Ctrl-C / crash) while badge shows watching</span></td>
+        <td>poll connection drops (server sees close)</td>
+        <td>agent_watching:false; SSE clears badge immediately; sent-but-undelivered
+          batches persist and drain on the next poll connect</td>
+        <td>badge disappears; a Send while nobody watches still lands (drained later)
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></td>
+      </tr>
+      <tr data-brain-item="1">
+        <td><span data-item-text data-brain-action>Poll timeout with no annotations</span></td>
+        <td>--timeout elapsed</td>
+        <td>exit 0, status: timeout, help: re-run poll</td>
+        <td>agent re-runs or moves on; nothing lost
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></td>
+      </tr>
+      <tr data-brain-item="2">
+        <td><span data-item-text data-brain-action>annotations.json corrupt while polling</span></td>
+        <td>JSON.parse throw on wake</td>
+        <td>opError with path, exit 1 (no hang, heartbeat cleaned)</td>
+        <td>error: + help: fix path
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></td>
+      </tr>
+      <tr data-brain-item="3">
+        <td><span data-item-text data-brain-action>Unknown feature slug</span></td>
+        <td>feature lookup miss</td>
+        <td>opError, known-slugs help (existing idiom)</td>
+        <td>error: no feature "x" + slugs
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></td>
+      </tr>
+      <tr data-brain-item="4">
+        <td><span data-item-text data-brain-action>Two runners on the same feature</span></td>
+        <td>shared heartbeat file</td>
+        <td>both wake on changes; heartbeat is idempotent; last-exit removal tolerated (TTL covers it)</td>
+        <td>badge stays while either lives; both agents get the pin
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="testing-plan">
+  <h2>Testing plan</h2>
+  <p>Browser walk + CLI checks against the live server, per <code>brain playbook verify</code>.</p>
+  <ul class="checklist">
+    <li><label><input type="checkbox"> Golden path: runner attached → badge shows →
+      pin drafts + Send → poll returns the batch &lt;2s (deliveredAt stamped) → toast
+      live variant → re-capture supersedes → poll again returns nothing new</label></li>
+    <li><label><input type="checkbox"> Drain path: Send with no runner attached →
+      next poll connect returns the batch once; re-run returns nothing
+      (no double-delivery)</label></li>
+    <li><label><input type="checkbox"> Timeout path: poll --timeout 3 with nothing
+      sent → status: timeout, exit 0</label></li>
+    <li><label><input type="checkbox"> Kill runner → badge clears immediately (SSE);
+      toast falls back to the send-when-done variant</label></li>
+    <li><label><input type="checkbox"> Unknown feature / no server / corrupt
+      annotations.json → exit 1 opError with corrective help</label></li>
+    <li><label><input type="checkbox"> Unknown flag → exit 2; --help → exit 0</label></li>
+    <li><label><input type="checkbox"> home/progress show open-annotations line only
+      when open pins exist (D4)</label></li>
+    <li><label><input type="checkbox"> skill --check + brain check green; stdout
+      TOON-only, stderr diagnostics-only</label></li>
+  </ul>
+</section>
+
+<section id="open-questions" data-brain-section="open-questions">
+  <h2>Open questions</h2>
+  <ul>
+    <template>
+      <li data-brain-item>
+        <span data-item-text data-brain-action></span>
+        <span class="item-controls">
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+        </span>
+      </li>
+    </template>
+    <li data-brain-item="0">
+      <span data-item-text data-brain-action>Should `review poll` also drain open
+        watch-annotations for the plan's bound feature, so one runner covers both
+        surfaces during a review session?</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="1">
+      <span data-item-text data-brain-action>Poll output: include a data-URI thumb or
+        pixel coords derived from image dimensions so the agent can locate the pin
+        without opening the PNG?</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+  </ul>
+  <div class="list-add-row" data-brain-section-add="open-questions">
+    <input type="text" class="list-add-input" data-brain-action placeholder="Add an open question..." />
+    <button type="button" class="list-add-btn" data-brain-action>+ Add item</button>
+  </div>
+</section>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, theme: "neutral" });
+</script>
+
+<script>
+  function queueDecision(cardId, question) {
+    var card = document.getElementById(cardId);
+    var checked = card.querySelector('input[type="radio"]:checked');
+    if (!checked) return;
+    var choice = checked.value;
+    if (window.brain && typeof window.brain.queuePrompt === "function") {
+      window.brain.queuePrompt({
+        tag: "decision",
+        queueKey: cardId,
+        prompt: question + ": " + choice,
+        target: { type: "decision", question: question, choice: choice }
+      });
+    }
+    var ack = document.getElementById("ack-" + cardId);
+    if (ack) ack.textContent = "Queued: " + choice;
+  }
+
+  (function () {
+    function queueList(section, queueKey, prompt, action, item, index) {
+      if (window.brain && typeof window.brain.queuePrompt === "function") {
+        window.brain.queuePrompt({
+          tag: "list-edit",
+          queueKey: queueKey,
+          prompt: prompt,
+          target: { type: "list-edit", section: section, action: action, item: item, index: index }
+        });
+      }
+    }
+
+    function slugify(s) {
+      return String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "").slice(0, 60) || "item";
+    }
+
+    function itemText(el) {
+      var t = el.querySelector("[data-item-text]");
+      return (t || el).textContent.trim();
+    }
+
+    function addBadge(el, cls, label) {
+      var badge = el.querySelector("." + cls);
+      if (!badge) {
+        badge = document.createElement("span");
+        badge.className = "item-badge " + cls;
+        el.appendChild(badge);
+      }
+      badge.textContent = label;
+    }
+
+    function toggleRemoved(item, section) {
+      var index = Number(item.getAttribute("data-brain-item"));
+      var text = itemText(item);
+      var removed = item.classList.toggle("item-removed");
+      var xBtn = item.querySelector(".item-x");
+      var restoreBtn = item.querySelector(".item-restore");
+      if (xBtn) xBtn.hidden = removed;
+      if (restoreBtn) restoreBtn.hidden = !removed;
+      var key = section + ":remove:" + index;
+      if (removed) {
+        queueList(section, key, "Remove from " + section + ": \"" + text + "\"", "remove", text, index);
+      } else {
+        queueList(section, key, "Cancelled: keep \"" + text + "\" in " + section, "edit", text, index);
+      }
+    }
+
+    function startEdit(item, section) {
+      if (item.classList.contains("item-removed")) return;
+      var span = item.querySelector("[data-item-text]");
+      if (!span || span.isContentEditable) return;
+      var before = span.textContent;
+      span.setAttribute("contenteditable", "true");
+      span.focus();
+
+      function commit() {
+        span.removeAttribute("contenteditable");
+        span.removeEventListener("blur", commit);
+        span.removeEventListener("keydown", onKey);
+        var text = span.textContent.trim();
+        if (!text || text === before.trim()) { span.textContent = before; return; }
+        var index = Number(item.getAttribute("data-brain-item"));
+        addBadge(item, "item-badge-edited", "edited");
+        queueList(section, section + ":edit:" + index,
+          "Edit " + section + " item " + index + ": \"" + text + "\"", "edit", text, index);
+      }
+      function onKey(ev) {
+        if (ev.key === "Enter") { ev.preventDefault(); span.blur(); }
+        else if (ev.key === "Escape") { span.textContent = before; ev.preventDefault(); span.blur(); }
+      }
+      span.addEventListener("blur", commit);
+      span.addEventListener("keydown", onKey);
+    }
+
+    function commitAdd(addRow) {
+      var section = addRow.getAttribute("data-brain-section-add");
+      var input = addRow.querySelector(".list-add-input");
+      var text = input.value.trim();
+      if (!text) return;
+      var list = document.querySelector("[data-brain-section=\"" + section + "\"] ol, [data-brain-section=\"" + section + "\"] ul") ||
+                 document.querySelector("[data-brain-section=\"" + section + "\"]");
+      var tpl = list && list.querySelector("template");
+      if (!list || !tpl) return;
+      var node = document.importNode(tpl.content, true);
+      var item = node.querySelector("[data-brain-item]") || node.firstElementChild;
+      item.setAttribute("data-brain-item", "new");
+      var span = item.querySelector("[data-item-text]");
+      if (span) span.textContent = text;
+      item.classList.add("item-proposed");
+      addBadge(item, "item-badge-proposed", "proposed");
+      list.insertBefore(node, tpl.nextSibling);
+      input.value = "";
+      queueList(section, section + ":add:" + slugify(text),
+        "Add to " + section + ": \"" + text + "\"", "add", text, null);
+    }
+
+    document.addEventListener("click", function (ev) {
+      var xBtn = ev.target.closest(".item-x");
+      var restoreBtn = ev.target.closest(".item-restore");
+      if (xBtn || restoreBtn) {
+        var item = ev.target.closest("[data-brain-item]");
+        var section = ev.target.closest("[data-brain-section]");
+        if (item && section) toggleRemoved(item, section.getAttribute("data-brain-section"));
+        return;
+      }
+      var addBtn = ev.target.closest(".list-add-btn");
+      if (addBtn) {
+        var addRow = ev.target.closest("[data-brain-section-add]");
+        if (addRow) commitAdd(addRow);
+      }
+    });
+
+    document.addEventListener("dblclick", function (ev) {
+      var item = ev.target.closest("[data-brain-item]");
+      if (!item) return;
+      var section = item.closest("[data-brain-section]");
+      if (section) startEdit(item, section.getAttribute("data-brain-section"));
+    });
+
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key !== "Enter") return;
+      var addRow = ev.target.closest("[data-brain-section-add]");
+      if (addRow && ev.target.classList.contains("list-add-input")) {
+        ev.preventDefault();
+        commitAdd(addRow);
+      }
+    });
+  })();
+</script>
+
+</body>
+</html>
