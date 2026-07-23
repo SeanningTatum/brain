@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "checks": [
+    { "name": "skill-sync", "run": "node bin/brain.js skill --check", "stages": ["baseline", "verify"] },
+    { "name": "harness", "run": "node bin/brain.js check --brain .brain", "stages": ["baseline", "verify"] }
+  ]
+}

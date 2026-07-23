@@ -1,6 +1,6 @@
 {
   "$schema": "Machine-readable feature state tracker. Source of truth for status; per-feature MD docs are source of truth for design/runtime.",
-  "updated": "2026-07-17",
+  "updated": "2026-07-23",
   "policy": {
     "one_in_progress_at_a_time": true,
     "definition_of_done": "implementation complete + verify-done passed (CLI invoked against .brain, exit codes + TOON eyeballed, stderr diagnostics-only) + feature MD updated + brain skill --check green + brain coherent"
@@ -60,6 +60,21 @@
       ],
       "status": "planned",
       "evidence": "",
+      "owners": [
+        "sean"
+      ]
+    },
+    {
+      "id": "feat-005",
+      "name": "harness-mode — AGENTS.md parity (verify runner + bookend playbooks + init)",
+      "slug": "harness-mode",
+      "doc": ".brain/features/harness-mode/harness-mode.md",
+      "description": "Makes brain-axi a full 5-subsystem harness: `brain verify` runs a declared check registry (.brain/verify.json, stages bootstrap/baseline/verify) replacing bespoke init.sh + verify scripts; `start`/`done` bookend playbooks; `brain init` scaffolds a minimal .brain skeleton with optional AGENTS.md pointer. setup --commands generation deferred per plan harness-parity D0.",
+      "dependencies": [
+        "core-cli"
+      ],
+      "status": "shipped",
+      "evidence": "verify 2/2 pass recorded as run-note step 5 (features/harness-mode/runs/2026-07-23-progress.md); brain check 10 rows all-pass incl. verify.json registry row; skill --check exit 0; init scaffold round-trip verified in scratch (check/verify/context/progress all exit 0, re-init opError, AGENTS.md+CLAUDE.md symlink); non-negotiables sweep 0 hits on 2749-line diff",
       "owners": [
         "sean"
       ]

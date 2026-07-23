@@ -7,11 +7,37 @@ description: "Query and update a repo's .brain agent harness (features, progress
 
 All commands print TOON-structured output. Run from anywhere inside the repo; the CLI walks up to find `.brain/`. If `brain` is not on PATH, use `npx -y brain-axi <command>`.
 
+## Playbooks (`brain playbook <id>`)
+
+Five standing playbooks — each a full text standard printed by `brain playbook <id>`, meant to be followed step by step while doing the thing it names:
+
+- `start` — starting any non-trivial task — frame it, read the brain, baseline, open state
+- `plan` — writing any plan/proposal/design artifact for human review
+- `verify` — verifying a user-visible feature works — browser walk with screenshot evidence
+- `execute` — implementing an approved plan / working a feature to shipped
+- `done` — before declaring any task complete — full verify, harness invariants, coherence
+
+Run `brain playbook` for the live id/use_when index; `brain playbook <id>` for the full text. Referenced inline below at the point each one applies.
+
+## No `.brain/` yet?
+
+- `npx -y brain-axi init` — scaffolds a minimal .brain skeleton (HARNESS.md,
+  feature_list.json, progress.md with a first checkpoint, verify.json, doc
+  section stubs) into the current repo, terse and placeholder-marked for the
+  project to fill in. Errors (exit 1) if `.brain/` already exists — never
+  clobbers. `--agents-md` also writes an AGENTS.md pointer + CLAUDE.md
+  symlink; interactively prompts for that choice only in a real terminal,
+  else skips it by default.
+
 ## Orient (start of session)
 
 - `brain` — dashboard: feature counts, in-progress feature, last checkpoint
 - `brain progress` — latest session checkpoint in full (branch, next step)
 - `brain features` — feature list with status
+- `npx -y brain-axi playbook start` — starting any non-trivial task: read brain
+  state, frame intent/scope/affected feature(s), read the relevant docs, check
+  scope policy (`brain check`), establish a baseline (`brain verify --stage
+  baseline`), then claim + open state — before writing a line of code
 
 ## Look things up (during work)
 
@@ -25,8 +51,34 @@ All commands print TOON-structured output. Run from anywhere inside the repo; th
 
 - `brain progress add --summary "..." --next "..."` — append a session checkpoint
 - `brain features set-status <slug> --status <planned|in-progress|shipped|blocked|cut>` — flip feature state (enforces one-in-progress policy; `--status shipped` requires `--evidence`)
-- `brain check` — deterministic harness invariants (feature list validity, one-in-progress, doc paths, dependency refs, plan/review file integrity, verification docs); exit 1 on any failure, CI-usable
+- `brain check` — deterministic harness invariants (feature list validity, one-in-progress, doc paths, dependency refs, plan/review file integrity, verification docs, verify.json shape when present); exit 1 on any failure, CI-usable
 - `brain` (home) shows an open `sessions[...]` table whenever a review session isn't ended yet
+
+## Verify — run declared project checks (`.brain/verify.json`)
+
+`.brain/verify.json` registers the project's own checks (typecheck, tests,
+lint, e2e, ...) so an agent runs the SAME commands the project actually uses
+instead of guessing. Shape:
+
+```json
+{"version":1,"checks":[{"name":"typecheck","run":"bun run typecheck","stages":["baseline","verify"]}]}
+```
+
+Each check: `name` (unique), `run` (shell command), `stages` (non-empty subset
+of `bootstrap|baseline|verify`), optional `timeout` in seconds (default 300).
+
+- `brain verify` — runs every check whose `stages` includes `verify` (the
+  default), sequentially and in registry order (checks may share
+  caches/DBs — never parallelized), from the repo root. Reports
+  `results[]{check,status,exit,seconds}` plus a `tail_<name>:` block (last 15
+  lines of combined output) for every non-pass check. Exits 1 if any executed
+  check fails or times out; exits 0 (no-op) if zero checks match the stage.
+- `brain verify --stage bootstrap|baseline|verify` — run a different stage.
+- `brain verify --only <name>` — run just one check by name; wins over `--stage`.
+- `brain verify --feature <slug>` — also appends the results verbatim as a
+  run-note step under that feature (same write path as `runs append`).
+- Missing or malformed `.brain/verify.json` exits 1 with a copy-pasteable
+  registry snippet in the `help:` lines — self-serve, no need to ask.
 
 ## Feature-centric `.brain/` layout
 
@@ -101,6 +153,17 @@ without rolling back the ship). `runs/progress.md` stays a rolling cursor;
   It live-updates as the commands above write state.
 - After opening a PR, record it: `npx -y brain-axi pr <slug> --url <pr-url>`
   — this is the dashboard's terminal state (approval → execution → PR).
+
+## Before declaring any task complete
+
+Run `npx -y brain-axi playbook done` and follow it before saying a task is
+finished. Short version: full `brain verify` (green, or fix and `--only
+<name>`) → feature verification for user-visible work (`playbook verify`,
+not duplicated here) → `brain check` (harness invariants) → brain coherence
+(every changed path's owning doc updated, or flagged) → close state
+(`runs append`, `progress add`, `brain ship <slug> --evidence "..."` if the
+feature itself is done). Anything unmet → say what's blocking, don't declare
+done.
 
 ## Plan review (human-in-the-loop) — the DEFAULT for plans and approvals
 

@@ -1,0 +1,888 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harness mode — AGENTS.md parity for brain-axi</title>
+<style>
+  :root {
+    --bg: #faf9f5; --surface: #ffffff; --fg: #141413; --fg-secondary: #3d3d3a;
+    --muted: #73726c; --border: #dedcd1; --highlight: #fff7ca; --accent: #d97757;
+    --space-2: 8px; --space-3: 16px; --space-4: 24px; --space-6: 40px;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      Helvetica, Arial, sans-serif;
+    font-size: 16px; background: var(--bg); color: var(--fg); line-height: 1.6;
+    max-width: 72ch; margin: 0 auto; padding: var(--space-6) var(--space-4);
+  }
+  h1, h2, h3 {
+    font-family: Charter, "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+    font-weight: 600; line-height: 1.25; color: var(--fg);
+  }
+  h1 { font-size: 1.75em; }
+  h2 { font-size: 1.3em; font-weight: 500; margin-top: var(--space-6);
+    border-bottom: 1px solid var(--border); padding-bottom: var(--space-2); }
+  h3 { font-size: 1.05em; font-weight: 500; }
+  p, li { color: var(--fg-secondary); }
+  mark, .highlight { background: var(--highlight); color: var(--fg); padding: 0 2px; }
+  .chip { display: inline-block; padding: 2px 10px; border-radius: 999px;
+    font-size: 0.8em; font-weight: 600; border: 1px solid var(--border); }
+  .chip-status-draft { background: var(--surface); color: var(--muted); }
+  .chip-status-in-review { background: var(--highlight); color: var(--fg);
+    border-color: var(--highlight); }
+  .chip-status-reviewed { background: var(--fg); color: #fff; border-color: var(--fg); }
+  .chip-high { color: var(--accent); border-color: var(--accent); }
+  .chip-med { color: var(--fg-secondary); }
+  .chip-low { color: var(--muted); }
+  .decision-card { background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: var(--space-4); margin: var(--space-4) 0; }
+  table { width: 100%; border-collapse: collapse; margin: var(--space-3) 0;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    overflow: hidden; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid
+    var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  .tag-recommended { color: var(--accent); font-weight: 600; }
+  .btn-queue, .btn-approve, .btn-request-changes {
+    border: none; border-radius: 10px; padding: 8px 16px; font-weight: 600;
+    cursor: pointer; font-size: 0.95em;
+  }
+  .btn-queue, .btn-approve { background: var(--fg); color: #fff; }
+  .btn-request-changes { background: transparent; color: var(--fg);
+    border: 1px solid var(--border); }
+  .queue-ack { margin-left: var(--space-3); font-size: 0.9em; color: var(--muted); }
+  .checklist { list-style: none; padding: 0; }
+  .checklist li { margin: var(--space-2) 0; }
+  pre.mermaid { text-align: center; }
+  pre.mermaid svg { display: block; margin: 0 auto; }
+  code { background: var(--surface); border: 1px solid var(--border);
+    border-radius: 4px; padding: 0 4px; font-size: 0.9em; }
+  pre.code { background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: var(--space-3); overflow-x: auto;
+    font-size: 0.85em; line-height: 1.5; }
+  .ok { color: var(--fg-secondary); }
+  .gap { background: var(--highlight); font-weight: 600; }
+  .item-x, .item-restore, .list-add-btn { cursor: pointer; border: 1px solid var(--border);
+    background: var(--surface); border-radius: 6px; font-size: 0.85em; padding: 1px 8px;
+    color: var(--fg-secondary); }
+  [data-item-text] { cursor: text; }
+  .item-removed { opacity: 0.5; }
+  .item-removed [data-item-text] { text-decoration: line-through; }
+  .item-edited [data-item-text] { border-bottom: 2px dotted var(--accent); }
+  .item-badge { font-size: 0.75em; color: var(--muted); margin-left: 6px; font-style: italic; }
+  .item-badge-proposed { color: var(--accent); }
+  .item-proposed { border-left: 2px dashed var(--accent); padding-left: 6px; }
+  .list-add-row { display: flex; gap: 8px; margin-top: var(--space-2); }
+  .list-add-input { flex: 1; padding: 6px 10px; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--surface); color: var(--fg); }
+</style>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, theme: "neutral" });
+</script>
+</head>
+<body>
+
+<header>
+  <h1>Harness mode — AGENTS.md parity</h1>
+  <div>
+    <span>2026-07-23</span> ·
+    <span>feature: harness-mode (proposed feat-005)</span> ·
+    <span class="chip chip-status-in-review">in-review</span> ·
+    <span>round 1</span>
+  </div>
+</header>
+
+<section id="tldr">
+  <h2>TL;DR</h2>
+  <p>The <code>cf-saas-starter-react-router</code> AGENTS.md harness runs on three
+  bespoke pieces brain-axi doesn't cover: <mark>a project-verification runner</mark>
+  (<code>init.sh</code> + the typecheck/test/build steps of verify-done),
+  <mark>task bookend runbooks</mark> (start-task / verify-done), and
+  <mark>hand-written slash commands</mark> per repo. This plan adds
+  <code>brain verify</code> (declared check registry + runner), two new playbooks
+  (<code>start</code>, <code>done</code>), and generated <code>.claude/commands/</code>
+  wrappers — so a target repo's AGENTS.md becomes a thin pointer at
+  <code>brain</code> commands and brain-axi is the whole harness, not just its memory.</p>
+</section>
+
+<section id="context">
+  <h2>Context</h2>
+  <p>Per the 2026-07-14 checkpoint ("Turned .brain onto brain-axi itself… check 8/8,
+  skill --check green"), brain-axi already dogfoods its own harness. feat-001
+  core-cli, feat-002 brain-review, and feat-003 shot-review are shipped;
+  feat-004 annotation-watch is planned with a draft plan
+  (2026-07-17-annotation-watch-runner). The latest cursor (2026-07-17) shows no
+  feature in-progress — the one-in-progress slot is free.</p>
+  <p>The source harness is
+  <a href="https://github.com/SeanningTatum/cf-saas-starter-react-router/blob/main/AGENTS.md">cf-saas-starter's AGENTS.md</a>:
+  a 5-subsystem harness (instructions / state / verification / scope / lifecycle)
+  wired with <code>init.sh</code>, <code>scripts/harness-check.sh</code>, and four
+  slash commands. Sean's ask: make brain-axi able to <em>be</em> that harness —
+  same guarantees, <code>brain</code> commands instead of bespoke shell scripts.</p>
+
+  <h3>Parity map — what already exists vs. the real gap</h3>
+  <table>
+    <thead><tr><th>AGENTS.md harness piece</th><th>brain-axi today</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td>feature_list.json state + one-in-progress scope policy</td>
+        <td><code>features</code>, <code>features set-status</code>, <code>ship</code></td><td class="ok">covered</td></tr>
+      <tr><td>progress.md rolling cursor</td><td><code>progress</code>, <code>progress add</code></td><td class="ok">covered</td></tr>
+      <tr><td>Run notes (deep task state)</td><td><code>runs</code>, <code>runs append</code></td><td class="ok">covered</td></tr>
+      <tr><td>Retrieval over recall (index map, rules, recipes)</td><td><code>docs</code>, <code>search</code>, <code>context</code></td><td class="ok">covered</td></tr>
+      <tr><td><code>scripts/harness-check.sh</code> (11 invariants)</td><td><code>check</code> (8 invariants, CI-usable)</td><td class="ok">covered</td></tr>
+      <tr><td>SessionStart lifecycle hook</td><td><code>setup --app</code> + <code>context</code></td><td class="ok">covered</td></tr>
+      <tr><td>/ship-feature close-out</td><td><code>ship</code> (evidence-gated + check)</td><td class="ok">covered</td></tr>
+      <tr><td>Feature verification + screenshots</td><td><code>verifications</code>, <code>shots</code>, <code>watch</code>, <code>pr</code></td><td class="ok">covered (beyond parity)</td></tr>
+      <tr><td><code>init.sh</code> bootstrap + <code>--baseline</code></td><td>nothing — bespoke shell per repo</td><td class="gap">GAP</td></tr>
+      <tr><td>verify-done's typecheck / test / e2e / build runs</td><td>nothing — agent must remember the commands</td><td class="gap">GAP</td></tr>
+      <tr><td>/start-task, /verify-done bookend runbooks</td><td>playbooks exist for plan/execute/verify only</td><td class="gap">GAP</td></tr>
+      <tr><td>Four <code>.claude/commands/*.md</code> files</td><td>hand-written per repo</td><td class="gap">GAP</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="big-picture">
+  <h2>Big picture</h2>
+  <pre class="mermaid">
+flowchart TD
+  A[Agent session in target repo] -->|SessionStart hook| C[brain context]
+  A -->|/start-task| PB[brain playbook start]
+  PB --> V1[brain verify --stage baseline]
+  A -->|work| RA[brain runs append]
+  A -->|/verify-done| PD[brain playbook done]
+  PD --> V2[brain verify]
+  V2 --> REG[.brain/verify.json<br/>declared check registry]
+  REG --> SH[shell: typecheck / test / e2e / build]
+  PD --> CK[brain check<br/>harness invariants]
+  A -->|/ship-feature| SP[brain ship]
+  </pre>
+  <p>One new primitive carries the whole design: the target repo <em>declares</em>
+  its verification commands once in <code>.brain/verify.json</code>, and
+  <code>brain verify</code> runs them deterministically — same TOON output, exit
+  codes, and <code>help:</code> guidance as every other brain command. The
+  bookend playbooks and generated slash commands are thin, generic wrappers
+  around that primitive plus the commands that already exist.</p>
+</section>
+
+<section id="bloat">
+  <h2>Is this worth the weight? (round-1 concern, answered honestly)</h2>
+  <p>Raised in review: <em>"this might bloat brain-axi — or will it make it a
+  better experience overall?"</em> The three additions are not equal. Weighed
+  one by one:</p>
+  <table>
+    <thead><tr><th>Addition</th><th>Real cost</th><th>Real value</th><th>Verdict</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>brain verify</code> + registry</td>
+        <td>~150-200 lines in bin/brain.js (spawn, timeout, TOON table). No new deps, no new files in this repo beyond verify.json.</td>
+        <td>Closes the <mark>verification subsystem</mark> — the one of the five harness concerns brain-axi currently can't touch. Evidence strings for <code>ship</code>/<code>runs append</code> come from a runner instead of agent transcription. Replaces a bespoke init.sh in every target repo. Also the CI story (<code>brain verify && brain check</code>).</td>
+        <td><span class="chip chip-low">keep — core</span></td>
+      </tr>
+      <tr>
+        <td><code>start</code> / <code>done</code> playbooks</td>
+        <td>Pure text in the existing playbook table. Near-zero code weight; a sync burden only if command names change (skill --check already gates that).</td>
+        <td>The bookends stop being hand-written per repo. This is exactly the contextual-disclosure pattern brain-axi already bets on.</td>
+        <td><span class="chip chip-low">keep — cheap</span></td>
+      </tr>
+      <tr>
+        <td><code>setup --commands</code> generation</td>
+        <td>Highest bloat risk: four markdown templates baked into the single-file bin, and a <mark>second drift surface</mark> like skillContent() — every command rename now updates skill + playbooks + templates.</td>
+        <td>Convenience only — a human-typeable entry point. Agents already get the same content from <code>brain playbook start/done</code> via the skill; a repo can hand-write 4-line wrappers in a minute.</td>
+        <td><span class="chip chip-high">deferrable</span></td>
+      </tr>
+    </tbody>
+  </table>
+  <p>Honest answer: <mark>verify is the product; command generation is the
+  bloat</mark>. The revised recommendation (D6 below) ships Phases 1-2 now and
+  defers Phase 3 until verify has proven itself in a real target repo — if
+  playbooks turn out to be enough, Phase 3 dies and brain-axi stays lean. What
+  keeps the CLI honest either way: zero-dep single file, TOON-only stdout,
+  every addition gated by <code>skill --check</code> + <code>brain check</code>.</p>
+</section>
+
+<section id="decisions">
+  <h2>Decisions needed</h2>
+
+  <div class="decision-card" id="decision-scope" data-brain-action>
+    <p><strong>0. Scope — how much of this ships?</strong></p>
+    <table>
+      <thead><tr><th></th><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><input type="radio" name="decision-scope" id="opt-scope-lean"
+            value="Phases 1-2 now (verify + playbooks), defer command generation" checked data-brain-action></td>
+          <td><label for="opt-scope-lean">Phases 1-2 now; defer command generation
+            <span class="tag-recommended">(recommended)</span></label></td>
+          <td>All the harness power, none of the template-drift surface; smallest diff that makes brain-axi a full harness</td>
+          <td>Target repos hand-write 4 thin slash-command files (minutes, once)</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-scope" id="opt-scope-full"
+            value="All three phases as planned" data-brain-action></td>
+          <td><label for="opt-scope-full">All three phases as planned</label></td>
+          <td>One-command install, full parity immediately</td>
+          <td>Second generated-content drift surface in the bin</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-scope" id="opt-scope-none"
+            value="Shelve — brain-axi stays memory/planner only" data-brain-action></td>
+          <td><label for="opt-scope-none">Shelve the whole thing</label></td>
+          <td>Zero new weight</td>
+          <td>Verification subsystem stays outside the tool; every target repo keeps a bespoke init.sh + hand-remembered commands</td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn-queue" data-brain-action
+      onclick="queueDecision('decision-scope', 'Scope — how much of this ships?')">
+      Queue answer
+    </button>
+    <span class="queue-ack" id="ack-decision-scope"></span>
+  </div>
+
+  <div class="decision-card" id="decision-registry" data-brain-action>
+    <p><strong>1. Where does the check registry live?</strong>
+      <span class="chip chip-status-reviewed">answered round 1: .brain/verify.json</span></p>
+    <p>The runner needs a machine-readable list of the project's real commands
+    (typecheck, test, e2e, build, bootstrap).</p>
+    <table>
+      <thead><tr><th></th><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><input type="radio" name="decision-registry" id="opt-verify-json"
+            value=".brain/verify.json (new file)" checked data-brain-action></td>
+          <td><label for="opt-verify-json">.brain/verify.json — new dedicated file
+            <span class="tag-recommended">(recommended)</span></label></td>
+          <td>Single-purpose, easy to validate, mirrors feature_list.json precedent; <code>brain check</code> gains a "parses" row</td>
+          <td>One more file in the skeleton</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-registry" id="opt-feature-list"
+            value="a harness block inside feature_list.json" data-brain-action></td>
+          <td><label for="opt-feature-list">A <code>harness</code> block inside feature_list.json</label></td>
+          <td>No new file</td>
+          <td>Muddies the feature tracker's single responsibility; write commands touch it constantly</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-registry" id="opt-harness-md"
+            value="fenced block parsed out of HARNESS.md" data-brain-action></td>
+          <td><label for="opt-harness-md">Fenced JSON block parsed out of HARNESS.md</label></td>
+          <td>Commands live next to their prose explanation</td>
+          <td>Fragile parsing; humans editing prose can silently break the runner</td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn-queue" data-brain-action
+      onclick="queueDecision('decision-registry', 'Where does the check registry live?')">
+      Queue answer
+    </button>
+    <span class="queue-ack" id="ack-decision-registry"></span>
+  </div>
+
+  <div class="decision-card" id="decision-surface" data-brain-action>
+    <p><strong>2. Command surface for the runner?</strong></p>
+    <p>init.sh has two modes (full bootstrap vs. <code>--baseline</code>) and
+    verify-done has a third, heavier set (e2e, build). Checks are tagged with
+    the stages they belong to.</p>
+    <table>
+      <thead><tr><th></th><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><input type="radio" name="decision-surface" id="opt-one-verb"
+            value="one brain verify verb with --stage" checked data-brain-action></td>
+          <td><label for="opt-one-verb">One verb: <code>brain verify [--stage bootstrap|baseline|verify] [--only name]</code>
+            <span class="tag-recommended">(recommended)</span></label></td>
+          <td>One thing to learn; stages are data, not commands; default stage <code>verify</code> matches the common case</td>
+          <td>Slightly longer invocations for baseline</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-surface" id="opt-three-verbs"
+            value="separate verbs: brain bootstrap / baseline / verify" data-brain-action></td>
+          <td><label for="opt-three-verbs">Three verbs: <code>bootstrap</code> / <code>baseline</code> / <code>verify</code></label></td>
+          <td>Reads like init.sh</td>
+          <td>Three COMMANDS entries + three help blocks for one feature; skill grows 3 sections</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-surface" id="opt-check-flag"
+            value="fold into brain check --project" data-brain-action></td>
+          <td><label for="opt-check-flag">Fold into <code>brain check --project</code></label></td>
+          <td>No new verb</td>
+          <td>Conflates brain-integrity invariants with project tests; breaks "check is fast and read-only"</td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn-queue" data-brain-action
+      onclick="queueDecision('decision-surface', 'Command surface for the runner?')">
+      Queue answer
+    </button>
+    <span class="queue-ack" id="ack-decision-surface"></span>
+  </div>
+
+  <div class="decision-card" id="decision-recording" data-brain-action>
+    <p><strong>3. Should verify results be recorded into the brain?</strong></p>
+    <p>The execute playbook's rule: evidence strings come from real command
+    output. The runner is the natural producer of that evidence.</p>
+    <table>
+      <thead><tr><th></th><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><input type="radio" name="decision-recording" id="opt-optin-record"
+            value="opt-in: --feature <slug> appends a run-note step" checked data-brain-action></td>
+          <td><label for="opt-optin-record">Opt-in: <code>--feature &lt;slug&gt;</code> appends a run-note step with verbatim result rows
+            <span class="tag-recommended">(recommended)</span></label></td>
+          <td>Evidence lands in deep state automatically when working a feature; harmless otherwise</td>
+          <td>Agent must remember the flag (playbooks will say so)</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-recording" id="opt-print-only"
+            value="print-only, never writes" data-brain-action></td>
+          <td><label for="opt-print-only">Print-only — agent copies output into <code>runs append</code> itself</label></td>
+          <td>Runner stays pure read/exec</td>
+          <td>Re-introduces the transcription step the evidence rule exists to eliminate</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-recording" id="opt-auto-record"
+            value="always auto-record to the in-progress feature" data-brain-action></td>
+          <td><label for="opt-auto-record">Always auto-record to the in-progress feature</label></td>
+          <td>Zero flags</td>
+          <td>Surprising writes; wrong when verify runs outside feature work (CI, spot checks)</td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn-queue" data-brain-action
+      onclick="queueDecision('decision-recording', 'Should verify results be recorded into the brain?')">
+      Queue answer
+    </button>
+    <span class="queue-ack" id="ack-decision-recording"></span>
+  </div>
+
+  <div class="decision-card" id="decision-commands" data-brain-action>
+    <p><strong>4. How do the four slash commands reach a target repo?</strong></p>
+    <p>cf-saas-starter hand-writes <code>.claude/commands/{start-task,verify-done,ship-feature,harness-check}.md</code>.
+    brain-axi can generate stack-agnostic versions that delegate to
+    <code>brain playbook start/done</code>, <code>brain verify</code>, <code>brain ship</code>, <code>brain check</code>.</p>
+    <table>
+      <thead><tr><th></th><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><input type="radio" name="decision-commands" id="opt-setup-flag"
+            value="extend brain setup with --commands" checked data-brain-action></td>
+          <td><label for="opt-setup-flag">Extend <code>brain setup</code>: <code>--commands</code> flag writes them (idempotent, marker-guarded)
+            <span class="tag-recommended">(recommended)</span></label></td>
+          <td>setup is already the "wire me into this repo" verb and already idempotent; one install step total</td>
+          <td>setup grows a second concern</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-commands" id="opt-new-verb"
+            value="new verb: brain commands install" data-brain-action></td>
+          <td><label for="opt-new-verb">New verb: <code>brain commands install</code></label></td>
+          <td>Clean separation</td>
+          <td>Another top-level command for a once-per-repo action</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-commands" id="opt-skill-only"
+            value="leave generation to the init-brain skill" data-brain-action></td>
+          <td><label for="opt-skill-only">Leave it to the init-brain skill (agent writes them)</label></td>
+          <td>No CLI change</td>
+          <td>Non-deterministic output; drifts per repo; the exact problem brain skill --check solves for skills</td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn-queue" data-brain-action
+      onclick="queueDecision('decision-commands', 'How do the four slash commands reach a target repo?')">
+      Queue answer
+    </button>
+    <span class="queue-ack" id="ack-decision-commands"></span>
+  </div>
+
+  <div class="decision-card" id="decision-bootstrap" data-brain-action>
+    <p><strong>5. Does the registry also own bootstrap (install / migrate), killing init.sh entirely?</strong></p>
+    <table>
+      <thead><tr><th></th><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><input type="radio" name="decision-bootstrap" id="opt-bootstrap-in"
+            value="yes — bootstrap stage in verify.json" checked data-brain-action></td>
+          <td><label for="opt-bootstrap-in">Yes — a <code>bootstrap</code> stage in the registry
+            <span class="tag-recommended">(recommended)</span></label></td>
+          <td>init.sh fully replaced; one registry describes the project's whole command surface</td>
+          <td>Mutating commands (install, migrate) run through brain — needs clear stage separation so <code>verify</code> stays side-effect-free</td>
+        </tr>
+        <tr>
+          <td><input type="radio" name="decision-bootstrap" id="opt-bootstrap-out"
+            value="no — verify/baseline only, init.sh survives" data-brain-action></td>
+          <td><label for="opt-bootstrap-out">No — verify/baseline only; repos keep an init.sh for bootstrap</label></td>
+          <td>Runner stays strictly read-verify</td>
+          <td>Parity incomplete; target repos still ship a bespoke script</td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn-queue" data-brain-action
+      onclick="queueDecision('decision-bootstrap', 'Does the registry also own bootstrap, killing init.sh?')">
+      Queue answer
+    </button>
+    <span class="queue-ack" id="ack-decision-bootstrap"></span>
+  </div>
+</section>
+
+<section id="schema">
+  <h2>The registry, concretely</h2>
+  <p>Assuming D1/D2/D5 recommendations — <code>.brain/verify.json</code> in a target repo:</p>
+  <pre class="code">{
+  "version": 1,
+  "checks": [
+    { "name": "install",   "run": "bun install",            "stages": ["bootstrap"] },
+    { "name": "migrate",   "run": "bun run db:migrate:local","stages": ["bootstrap"] },
+    { "name": "typecheck", "run": "bun run typecheck",      "stages": ["baseline", "verify"] },
+    { "name": "unit",      "run": "bun run test",           "stages": ["baseline", "verify"] },
+    { "name": "e2e",       "run": "bun run test:e2e",       "stages": ["verify"], "timeout": 600 },
+    { "name": "build",     "run": "bun run build",          "stages": ["verify"] }
+  ]
+}</pre>
+  <p><code>brain verify</code> runs each matching check sequentially (they share
+  caches and a DB — parallel is wrong here), captures exit code, duration, and
+  the last ~15 lines of combined output, and emits a TOON table
+  <code>results[n]{check,status,exit,seconds}</code> plus a <code>tail:</code>
+  block per failure. Aggregate exit 1 on any failure; the <code>help:</code>
+  list names the failing check and how to re-run just it
+  (<code>brain verify --only e2e</code>). brain-axi's own verify.json registers
+  <code>node bin/brain.js skill --check</code> and <code>node bin/brain.js check --brain .brain</code>
+  — the CLI verifies itself with its own runner.</p>
+</section>
+
+<section id="plan-of-record" data-brain-section="plan-of-record">
+  <h2>Plan of record</h2>
+  <ol>
+    <template>
+      <li data-brain-item>
+        <span data-item-text data-brain-action></span>
+        <span class="item-controls">
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+        </span>
+      </li>
+    </template>
+    <li data-brain-item="0"><strong>Phase 1 — registry + runner.</strong>
+      <span data-item-text data-brain-action>Add loadVerifyConfig + cmdVerify to bin/brain.js
+      (--stage, --only, --feature per D3), plus a "verify.json parses (when present)" row in brain check.
+      Acceptance: against brain-axi's own .brain, all stages run with correct exit codes; a bogus
+      command yields a fail row + exit 1; missing/malformed registry produces guided opError.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="1"><strong>Phase 2 — bookend playbooks.</strong>
+      <span data-item-text data-brain-action>Add playbook ids "start" (frame task → read brain →
+      scope check → brain verify --stage baseline → run note → progress add) and "done"
+      (brain verify → brain check → coherence sweep → close run note), generalized from
+      cf-saas-starter's 00-before-task / 99-verify-done. Acceptance: brain playbook lists 5 ids;
+      both render; content references only real commands.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="2"><strong>Phase 3 — generated slash commands.</strong>
+      <span data-item-text data-brain-action>Per D4: setup writes stack-agnostic
+      .claude/commands/{start-task,verify-done,ship-feature,harness-check}.md delegating to brain
+      playbook/verify/ship/check, marker-guarded so hand-edited files are never clobbered.
+      Acceptance: fresh scratch repo gets all four; re-run is a no-op; a user-modified file is
+      skipped with a warning.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="3"><strong>Phase 4 — sync + dogfood + ship.</strong>
+      <span data-item-text data-brain-action>Update skillContent() (new verify section + setup flag +
+      playbook ids), add .brain/verify.json to this repo, update own .claude/commands to delegate to
+      the new playbooks, feature MD + feature_list entry for feat-005. Acceptance: skill --check exit 0;
+      brain check all-pass; brain ship harness-mode with runner-produced evidence.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+  </ol>
+  <div class="list-add-row" data-brain-section-add="plan-of-record">
+    <input type="text" class="list-add-input" data-brain-action placeholder="Add a phase..." />
+    <button type="button" class="list-add-btn" data-brain-action>+ Add item</button>
+  </div>
+</section>
+
+<section id="files-changed">
+  <h2>Files that change</h2>
+  <table>
+    <thead><tr><th>Path</th><th>Change</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>bin/brain.js</td><td>edit</td>
+        <td>cmdVerify + loadVerifyConfig; check gains a registry row; setup gains command generation; two playbook texts; COMMANDS table; skillContent()</td></tr>
+      <tr><td>.brain/verify.json</td><td>new</td>
+        <td>Dogfood registry: skill --check + brain check as this repo's own checks</td></tr>
+      <tr><td>.brain/features/feature_list.json</td><td>edit</td>
+        <td>feat-005 harness-mode (in-progress at execution start)</td></tr>
+      <tr><td>.brain/features/harness-mode/harness-mode.md</td><td>new</td>
+        <td>Feature memory from _TEMPLATE</td></tr>
+      <tr><td>.claude/commands/start-task.md, verify-done.md</td><td>edit</td>
+        <td>Delegate to brain playbook start / done + brain verify instead of restating steps</td></tr>
+      <tr><td>.brain/rules/cli-commands.md, .brain/codebase docs</td><td>edit</td>
+        <td>Brain coherence for the new command surface</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="golden-path">
+  <h2>Golden path</h2>
+  <p>A fresh target repo, end to end:</p>
+  <pre class="mermaid">
+sequenceDiagram
+  participant H as Human/Agent (once)
+  participant A as Agent (each task)
+  participant B as brain CLI
+  participant S as Shell
+  H->>B: brain setup --app claude --commands
+  Note over B: SessionStart hook + 4 slash commands installed
+  A->>B: /start-task → brain playbook start
+  B-->>A: kickoff runbook (TOON)
+  A->>B: brain verify --stage baseline
+  B->>S: typecheck, unit tests (from verify.json)
+  S-->>B: exit codes + output tails
+  B-->>A: results table, exit 0
+  A->>A: implement, brain runs append per step
+  A->>B: /verify-done → brain verify && brain check
+  B-->>A: all pass, exit 0
+  A->>B: brain ship feature --evidence "verify 6/6 pass 2026-07-23"
+  </pre>
+</section>
+
+<section id="error-paths">
+  <h2>Error paths</h2>
+  <table>
+    <thead><tr><th>Failure</th><th>Detected by</th><th>Handled by</th><th>Agent sees</th></tr></thead>
+    <tbody data-brain-section="error-paths">
+      <template>
+        <tr data-brain-item>
+          <td data-item-text colspan="3"></td>
+          <td><button type="button" class="item-x" data-brain-action title="Remove">x</button>
+            <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></td>
+        </tr>
+      </template>
+      <tr data-brain-item="0">
+        <td data-item-text data-brain-action>brain verify with no .brain/verify.json</td>
+        <td>fs check before spawn</td>
+        <td>opError, exit 1</td>
+        <td>error + help: minimal verify.json snippet to create
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></td>
+      </tr>
+      <tr data-brain-item="1">
+        <td data-item-text data-brain-action>Malformed verify.json</td>
+        <td>JSON.parse throw / schema shape check</td>
+        <td>opError quoting the parse error; brain check row fails too</td>
+        <td>exit 1 + the exact bad field
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></td>
+      </tr>
+      <tr data-brain-item="2">
+        <td data-item-text data-brain-action>A check command exits non-zero</td>
+        <td>child exit code</td>
+        <td>fail row + last 15 output lines; remaining checks still run</td>
+        <td>results table, aggregate exit 1, help: brain verify --only &lt;name&gt;
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></td>
+      </tr>
+      <tr data-brain-item="3">
+        <td data-item-text data-brain-action>Check hangs past its timeout (default 300s, per-check override)</td>
+        <td>timer</td>
+        <td>child killed; status "timeout"</td>
+        <td>timeout row, exit 1
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></td>
+      </tr>
+      <tr data-brain-item="4">
+        <td data-item-text data-brain-action>setup --commands finds an existing hand-edited command file</td>
+        <td>missing generated-by marker</td>
+        <td>skip that file, write the rest</td>
+        <td>skipped row + warning on stderr; never clobbers
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></td>
+      </tr>
+      <tr data-brain-item="5">
+        <td data-item-text data-brain-action>--feature recording flag names an unknown slug</td>
+        <td>feature_list lookup</td>
+        <td>usageError before any check runs</td>
+        <td>exit 2 + valid slugs listed
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="testing-plan" data-brain-section="testing-plan">
+  <h2>Testing plan</h2>
+  <p>brain-axi has no test framework — verification is invoking the CLI against
+  <code>.brain/</code> and reading exit codes + TOON (per verify-done).</p>
+  <ul class="checklist">
+    <template>
+      <li data-brain-item>
+        <label><input type="checkbox"> <span data-item-text data-brain-action></span></label>
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </li>
+    </template>
+    <li data-brain-item="0"><label><input type="checkbox"> <span data-item-text data-brain-action>Golden path: brain verify against this repo's verify.json — all rows pass, exit 0, help list present</span></label>
+      <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+      <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></li>
+    <li data-brain-item="1"><label><input type="checkbox"> <span data-item-text data-brain-action>Error path: registry with a failing command → fail row + tail + exit 1; --only re-runs just it</span></label>
+      <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+      <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></li>
+    <li data-brain-item="2"><label><input type="checkbox"> <span data-item-text data-brain-action>Error path: missing + malformed verify.json → guided opError, exit 1 both times</span></label>
+      <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+      <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></li>
+    <li data-brain-item="3"><label><input type="checkbox"> <span data-item-text data-brain-action>Timeout: sleep-based check with timeout 1 → status timeout, child killed, exit 1</span></label>
+      <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+      <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></li>
+    <li data-brain-item="4"><label><input type="checkbox"> <span data-item-text data-brain-action>Recording: brain verify --feature harness-mode appends a run-note step with verbatim result rows</span></label>
+      <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+      <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></li>
+    <li data-brain-item="5"><label><input type="checkbox"> <span data-item-text data-brain-action>Setup: scratch repo gets 4 command files + hook; re-run no-op; hand-edited file preserved with warning</span></label>
+      <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+      <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></li>
+    <li data-brain-item="6"><label><input type="checkbox"> <span data-item-text data-brain-action>Regression: brain skill --check exit 0 after skillContent update; brain check all-pass incl. new registry row</span></label>
+      <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+      <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></li>
+    <li data-brain-item="7"><label><input type="checkbox"> <span data-item-text data-brain-action>Non-negotiables sweep: stdout stays TOON-only, stderr diagnostics-only, no new deps</span></label>
+      <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+      <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button></li>
+  </ul>
+  <div class="list-add-row" data-brain-section-add="testing-plan">
+    <input type="text" class="list-add-input" data-brain-action placeholder="Add a test..." />
+    <button type="button" class="list-add-btn" data-brain-action>+ Add item</button>
+  </div>
+</section>
+
+<section id="open-questions" data-brain-section="open-questions">
+  <h2>Open questions</h2>
+  <ul>
+    <template>
+      <li data-brain-item>
+        <span data-item-text data-brain-action></span>
+        <span class="item-controls">
+          <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+          <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+        </span>
+      </li>
+    </template>
+    <li data-brain-item="0">
+      <span data-item-text data-brain-action>Should a later phase add `brain init` (CLI-scaffolded .brain skeleton, replacing the init-brain skill)? Embedding the template bloats the single-file bin — maybe a minimal skeleton only.</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="1">
+      <span data-item-text data-brain-action>Should setup also write the AGENTS.md pointer block + CLAUDE.md symlink into a target repo, or is that prose too project-specific to generate?</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="2">
+      <span data-item-text data-brain-action>CI story: document `npx -y brain-axi verify && npx -y brain-axi check` as the canonical GitHub Action step in the generated skill?</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+    <li data-brain-item="3">
+      <span data-item-text data-brain-action>Do checks need per-check cwd/env overrides (monorepos), or is repo-root + inherited env enough for v1?</span>
+      <span class="item-controls">
+        <button type="button" class="item-x" data-brain-action title="Remove">x</button>
+        <button type="button" class="item-restore" data-brain-action hidden title="Restore">restore</button>
+      </span>
+    </li>
+  </ul>
+  <div class="list-add-row" data-brain-section-add="open-questions">
+    <input type="text" class="list-add-input" data-brain-action placeholder="Add an open question..." />
+    <button type="button" class="list-add-btn" data-brain-action>+ Add item</button>
+  </div>
+</section>
+
+<section id="verdict">
+  <h2>Verdict</h2>
+  <div>
+    <button type="button" class="btn-approve" data-brain-action
+      onclick="queueVerdict('approve')">Approve plan</button>
+    <button type="button" class="btn-request-changes" data-brain-action
+      onclick="queueVerdict('request-changes')">Request changes</button>
+    <span class="queue-ack" id="ack-verdict"></span>
+  </div>
+</section>
+
+<script>
+  function queueDecision(cardId, question) {
+    var card = document.getElementById(cardId);
+    var checked = card.querySelector('input[type="radio"]:checked');
+    if (!checked) return;
+    var choice = checked.value;
+    if (window.brain && typeof window.brain.queuePrompt === "function") {
+      window.brain.queuePrompt({
+        tag: "decision",
+        queueKey: cardId,
+        prompt: question + ": " + choice,
+        target: { type: "decision", question: question, choice: choice }
+      });
+    }
+    var ack = document.getElementById("ack-" + cardId);
+    if (ack) ack.textContent = "Queued: " + choice;
+  }
+
+  function queueVerdict(verdict) {
+    if (window.brain && typeof window.brain.queuePrompt === "function") {
+      window.brain.queuePrompt({
+        tag: "message",
+        queueKey: "verdict",
+        prompt: verdict === "approve"
+          ? "Plan approved as written."
+          : "Requesting changes — see annotations."
+      });
+    }
+    var ack = document.getElementById("ack-verdict");
+    if (ack) ack.textContent = "Queued: " + verdict;
+  }
+
+  (function () {
+    function queueList(section, queueKey, prompt, action, item, index) {
+      if (window.brain && typeof window.brain.queuePrompt === "function") {
+        window.brain.queuePrompt({
+          tag: "list-edit",
+          queueKey: queueKey,
+          prompt: prompt,
+          target: { type: "list-edit", section: section, action: action, item: item, index: index }
+        });
+      }
+    }
+
+    function slugify(s) {
+      return String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "").slice(0, 60) || "item";
+    }
+
+    function itemText(el) {
+      var t = el.querySelector("[data-item-text]");
+      return (t || el).textContent.trim();
+    }
+
+    function addBadge(el, cls, label) {
+      var badge = el.querySelector("." + cls);
+      if (!badge) {
+        badge = document.createElement("span");
+        badge.className = "item-badge " + cls;
+        el.appendChild(badge);
+      }
+      badge.textContent = label;
+    }
+
+    function toggleRemoved(item, section) {
+      var index = Number(item.getAttribute("data-brain-item"));
+      var text = itemText(item);
+      var removed = item.classList.toggle("item-removed");
+      var xBtn = item.querySelector(".item-x");
+      var restoreBtn = item.querySelector(".item-restore");
+      if (xBtn) xBtn.hidden = removed;
+      if (restoreBtn) restoreBtn.hidden = !removed;
+      var key = section + ":remove:" + index;
+      if (removed) {
+        queueList(section, key, "Remove from " + section + ": \"" + text + "\"", "remove", text, index);
+      } else {
+        queueList(section, key, "Cancelled: keep \"" + text + "\" in " + section, "edit", text, index);
+      }
+    }
+
+    function startEdit(item, section) {
+      if (item.classList.contains("item-removed")) return;
+      var span = item.querySelector("[data-item-text]");
+      if (!span || span.isContentEditable) return;
+      var before = span.textContent;
+      span.setAttribute("contenteditable", "true");
+      span.focus();
+
+      function commit() {
+        span.removeAttribute("contenteditable");
+        span.removeEventListener("blur", commit);
+        span.removeEventListener("keydown", onKey);
+        var text = span.textContent.trim();
+        if (!text || text === before.trim()) { span.textContent = before; return; }
+        var index = Number(item.getAttribute("data-brain-item"));
+        addBadge(item, "item-badge-edited", "edited");
+        queueList(section, section + ":edit:" + index,
+          "Edit " + section + " item " + index + ": \"" + text + "\"", "edit", text, index);
+      }
+      function onKey(ev) {
+        if (ev.key === "Enter") { ev.preventDefault(); span.blur(); }
+        else if (ev.key === "Escape") { span.textContent = before; ev.preventDefault(); span.blur(); }
+      }
+      span.addEventListener("blur", commit);
+      span.addEventListener("keydown", onKey);
+    }
+
+    function commitAdd(addRow) {
+      var section = addRow.getAttribute("data-brain-section-add");
+      var input = addRow.querySelector(".list-add-input");
+      var text = input.value.trim();
+      if (!text) return;
+      var list = document.querySelector("[data-brain-section=\"" + section + "\"]");
+      var tpl = list && list.querySelector("template");
+      if (!list || !tpl) return;
+      var node = document.importNode(tpl.content, true);
+      var item = node.querySelector("[data-brain-item]") || node.firstElementChild;
+      item.setAttribute("data-brain-item", "new");
+      var span = item.querySelector("[data-item-text]");
+      if (span) span.textContent = text;
+      item.classList.add("item-proposed");
+      addBadge(item, "item-badge-proposed", "proposed");
+      list.insertBefore(node, tpl.nextSibling);
+      input.value = "";
+      queueList(section, section + ":add:" + slugify(text),
+        "Add to " + section + ": \"" + text + "\"", "add", text, null);
+    }
+
+    document.addEventListener("click", function (ev) {
+      var xBtn = ev.target.closest(".item-x");
+      var restoreBtn = ev.target.closest(".item-restore");
+      if (xBtn || restoreBtn) {
+        var item = ev.target.closest("[data-brain-item]");
+        var section = ev.target.closest("[data-brain-section]");
+        if (item && section) toggleRemoved(item, section.getAttribute("data-brain-section"));
+        return;
+      }
+      var addBtn = ev.target.closest(".list-add-btn");
+      if (addBtn) {
+        var addRow = ev.target.closest("[data-brain-section-add]");
+        if (addRow) commitAdd(addRow);
+      }
+    });
+
+    document.addEventListener("dblclick", function (ev) {
+      var item = ev.target.closest("[data-brain-item]");
+      if (!item) return;
+      var section = item.closest("[data-brain-section]");
+      if (section) startEdit(item, section.getAttribute("data-brain-section"));
+    });
+
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key !== "Enter") return;
+      var addRow = ev.target.closest("[data-brain-section-add]");
+      if (addRow && ev.target.classList.contains("list-add-input")) {
+        ev.preventDefault();
+        commitAdd(addRow);
+      }
+    });
+  })();
+</script>
+
+</body>
+</html>

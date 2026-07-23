@@ -21,6 +21,42 @@
 
 ---
 
+## 2026-07-23 — harness-mode shipped + PR #8 opened: https://github.com/SeanningTatum/brain-axi/pull/8 — brain verify (registry runner), start/done playbooks, brain init scaffolder. 4 commits on feat/harness-mode. Deferred: setup --commands (D0). Uncommitted README/asset work from a prior session left untouched.
+- branch: `feat/harness-mode`
+- in-progress feature: none
+- run note: none
+- next: Await PR review/merge; adopt in cf-saas-starter (replace init.sh/harness-check.sh with verify.json); revisit setup --commands after real-repo usage
+
+---
+
+## 2026-07-23 — PR opened for harness-mode: https://github.com/SeanningTatum/brain-axi/pull/8
+- branch: `feat/harness-mode`
+- in-progress feature: none
+- run note: none
+
+---
+
+## 2026-07-23 — shipped harness-mode: verify 2/2 pass recorded as run-note step 5 (features/harness-mode/runs/2026-07-23-progress.md); brain check 10 rows all
+- branch: `feat/harness-mode`
+- in-progress feature: none
+- run note: none
+
+---
+
+## 2026-07-23 — Plan harness-parity reviewed round 2: all decisions locked (verify.json registry, one verify verb --stage, opt-in --feature recording, bootstrap stage in, setup --commands deferred, brain init promoted to Phase 3). feat-005 harness-mode opened in-progress on feat/harness-mode. Starting Phase 1: cmdVerify.
+- branch: `feat/harness-mode`
+- in-progress feature: none
+- run note: none
+
+---
+
+## 2026-07-23 — Kickoff: harness-parity plan — map cf-saas-starter AGENTS.md harness onto brain-axi CLI, gap = verify runner + bookend playbooks + generated slash commands. Authoring plan artifact for review.
+- branch: `main`
+- in-progress feature: none
+- run note: none
+
+---
+
 ## 2026-07-17 — shot-review PR opened: https://github.com/SeanningTatum/brain-axi/pull/4 — carousel + annotation + CTA toast + shots notes verb, all verified. Pre-PR review inline (Greptile down, org spend limit blocked workflow review); 1 finding fixed (3f71dca).
 - branch: `feat/shot-review-carousel`
 - in-progress feature: none

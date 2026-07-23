@@ -6,7 +6,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { execFileSync, spawn } from "node:child_process";
+import readline from "node:readline";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -285,6 +286,69 @@ const DOC_SECTIONS = {
   emails: "emails",
   transcripts: "transcripts",
 };
+
+// verify.json: a declared registry of project checks (typecheck, tests, lint,
+// e2e, ...) that `brain verify` runs sequentially. VERIFY_STAGES are the only
+// legal values inside a check's `stages` array.
+const VERIFY_STAGES = ["bootstrap", "baseline", "verify"];
+const VERIFY_SNIPPET =
+  '{"version":1,"checks":[{"name":"typecheck","run":"bun run typecheck","stages":["baseline","verify"]}]}';
+
+function verifyConfigPath(brain) {
+  return path.join(brain, "verify.json");
+}
+
+// Validates the parsed verify.json shape; returns null when valid, else a
+// precise message naming the exact bad field.
+function validateVerifyShape(parsed) {
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+    return "verify.json must be a JSON object";
+  if (!Array.isArray(parsed.checks)) return `"checks" must be an array`;
+  const names = new Set();
+  for (let i = 0; i < parsed.checks.length; i++) {
+    const c = parsed.checks[i];
+    const at = `checks[${i}]`;
+    if (typeof c !== "object" || c === null || Array.isArray(c)) return `${at} must be an object`;
+    if (typeof c.name !== "string" || !c.name.trim()) return `${at}.name must be a non-empty string`;
+    if (names.has(c.name)) return `${at}.name "${c.name}" is not unique`;
+    names.add(c.name);
+    if (typeof c.run !== "string" || !c.run.trim()) return `${at}.run must be a non-empty string`;
+    if (!Array.isArray(c.stages) || c.stages.length === 0) return `${at}.stages must be a non-empty array`;
+    const badStage = c.stages.find((s) => !VERIFY_STAGES.includes(s));
+    if (badStage !== undefined)
+      return `${at}.stages contains invalid stage "${badStage}" (valid: ${VERIFY_STAGES.join("|")})`;
+    if (c.timeout !== undefined && (typeof c.timeout !== "number" || !Number.isFinite(c.timeout) || c.timeout <= 0))
+      return `${at}.timeout must be a positive number (seconds)`;
+  }
+  return null;
+}
+
+// Loads + validates .brain/verify.json. Never throws — mirrors
+// loadFeatureList/parseProgress's read style, but (unlike loadFeatureList)
+// hands the structured error back instead of calling opError itself, since
+// callers (cmdCheck vs cmdVerify) react to a missing/malformed file
+// differently. Returns { config, error } where error is null on success or
+// { kind: "missing"|"parse"|"shape", message }.
+function loadVerifyConfig(brain) {
+  const p = verifyConfigPath(brain);
+  const rel = path.relative(process.cwd(), p);
+  if (!fs.existsSync(p)) return { config: null, error: { kind: "missing", message: `missing ${rel}` } };
+  let raw;
+  try {
+    raw = fs.readFileSync(p, "utf8");
+  } catch (e) {
+    return { config: null, error: { kind: "missing", message: `could not read ${rel} (${e.message})` } };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    return { config: null, error: { kind: "parse", message: `${rel} is not valid JSON (${e.message})` } };
+  }
+  const shapeError = validateVerifyShape(parsed);
+  if (shapeError) return { config: null, error: { kind: "shape", message: `${rel}: ${shapeError}` } };
+  return { config: parsed, error: null };
+}
 
 // ---------------------------------------------------------------------------
 // Content truncation
@@ -565,6 +629,20 @@ function cmdCheck(argv) {
     ]);
   const brain = findBrain(flags.brain);
   const checks = brainCheck(brain);
+
+  const { config: verifyConfig, error: verifyError } = loadVerifyConfig(brain);
+  if (!verifyError) {
+    checks.push({
+      check: "verify.json parses (when present)",
+      status: "pass",
+      detail: `${verifyConfig.checks.length} check(s) declared`,
+    });
+  } else if (verifyError.kind === "missing") {
+    checks.push({ check: "verify.json parses (when present)", status: "pass", detail: "not present — optional" });
+  } else {
+    checks.push({ check: "verify.json parses (when present)", status: "fail", detail: verifyError.message });
+  }
+
   const failed = checks.filter((c) => c.status === "fail");
   print([
     ...toonTable("checks", checks, ["check", "status", "detail"]),
@@ -576,6 +654,162 @@ function cmdCheck(argv) {
     ),
   ]);
   if (failed.length) process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// Verify — declared project-check runner (.brain/verify.json registry)
+// ---------------------------------------------------------------------------
+
+// Last N lines of combined output, trimming a lone trailing empty line from
+// the final newline so the tail doesn't end on a blank row.
+function tailLines(text, n = 15) {
+  const lines = (text || "").split("\n");
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  return lines.slice(-n);
+}
+
+// Sanitizes a check name into a safe TOON key suffix for `tail_<name>:` —
+// check names are free-form strings, but TOON keys in this hand-rolled
+// encoder aren't quoted, so anything outside [A-Za-z0-9_-] must be replaced.
+function toonKeyPart(name) {
+  return name.replace(/[^A-Za-z0-9_-]/g, "_");
+}
+
+// Runs one check via the shell, capturing combined stdout+stderr (redirected
+// inside the shell command so ordering is preserved) and enforcing its
+// timeout. Never throws — timeouts and non-zero exits are both reported as a
+// structured result, not a JS exception.
+function runVerifyCheck(check, cwd) {
+  const timeoutSec = check.timeout || 300;
+  const start = Date.now();
+  const res = spawnSync(`${check.run} 2>&1`, { shell: true, cwd, timeout: timeoutSec * 1000, encoding: "utf8" });
+  const seconds = Number(((Date.now() - start) / 1000).toFixed(1));
+  const output = res.stdout || "";
+  if (res.error && res.error.code === "ETIMEDOUT")
+    return { check: check.name, status: "timeout", exit: null, seconds, output };
+  const exit = res.status;
+  return { check: check.name, status: exit === 0 ? "pass" : "fail", exit, seconds, output };
+}
+
+// Builds the TOON lines shared between stdout and the `--feature` run-note
+// step, so the recorded evidence matches what the agent actually saw.
+function buildVerifyReportLines(results) {
+  const lines = [
+    ...toonTable(
+      "results",
+      results.map((r) => ({ check: r.check, status: r.status, exit: r.exit, seconds: r.seconds })),
+      ["check", "status", "exit", "seconds"]
+    ),
+  ];
+  for (const r of results) {
+    if (r.status === "pass") continue;
+    lines.push(`tail_${toonKeyPart(r.check)}: |`);
+    for (const l of tailLines(r.output)) lines.push("  " + l);
+  }
+  return lines;
+}
+
+function cmdVerify(argv) {
+  const spec = {
+    "--stage": { value: true, desc: `stage to run (${VERIFY_STAGES.join("|")}, default: verify)` },
+    "--only": { value: true, desc: "run just this one check by name — wins over --stage when both are passed" },
+    "--feature": { value: true, desc: "also append the results verbatim as a run-note step for this feature" },
+  };
+  const { flags } = parseArgs(argv, spec, "verify");
+  if (flags.help)
+    helpBlock(
+      "verify",
+      "Run declared project checks from .brain/verify.json sequentially, from the repo root",
+      spec,
+      [
+        "brain verify",
+        "brain verify --stage baseline",
+        "brain verify --only typecheck",
+        "brain verify --feature authentication",
+      ]
+    );
+
+  const stage = flags.stage || "verify";
+  if (flags.stage !== undefined && !VERIFY_STAGES.includes(stage))
+    usageError(`invalid --stage "${stage}"`, [`valid stages: ${VERIFY_STAGES.join(", ")}`]);
+
+  const brain = findBrain(flags.brain);
+
+  let feat = null;
+  if (flags.feature) {
+    const list = loadFeatureList(brain);
+    feat = list.features.find((f) => f.slug === flags.feature || f.id === flags.feature);
+    if (!feat)
+      usageError(`no feature "${flags.feature}"`, [`known slugs: ${list.features.map((f) => f.slug).join(", ")}`]);
+  }
+
+  const { config, error } = loadVerifyConfig(brain);
+  if (error) {
+    if (error.kind === "missing") {
+      opError(error.message, [
+        `Create ${path.relative(process.cwd(), verifyConfigPath(brain))} with a checks array, e.g. ${VERIFY_SNIPPET}`,
+        `Each check: name (unique), run (shell command), stages (subset of ${VERIFY_STAGES.join("|")}), optional timeout (seconds, default 300)`,
+      ]);
+    }
+    opError(error.message, [`Fix ${path.relative(process.cwd(), verifyConfigPath(brain))} and re-run \`brain verify\``]);
+  }
+
+  let selected;
+  if (flags.only) {
+    const found = config.checks.find((c) => c.name === flags.only);
+    if (!found)
+      usageError(`unknown check "${flags.only}"`, [
+        `valid checks: ${config.checks.map((c) => c.name).join(", ")}`,
+      ]);
+    selected = [found];
+  } else {
+    selected = config.checks.filter((c) => c.stages.includes(stage));
+  }
+
+  if (selected.length === 0) {
+    const perStage = VERIFY_STAGES.map(
+      (s) => `${s}: ${config.checks.filter((c) => c.stages.includes(s)).length}`
+    ).join(", ");
+    print([
+      `results: 0 checks match stage "${stage}"`,
+      ...toonList("help", [
+        `Checks per stage — ${perStage}`,
+        "Run `brain verify --stage <stage>` with a stage that has checks, or `brain verify --only <name>`",
+      ]),
+    ]);
+    return;
+  }
+
+  const repoRoot = path.dirname(brain);
+  const results = selected.map((check) => runVerifyCheck(check, repoRoot));
+  const failing = results.filter((r) => r.status !== "pass");
+
+  const reportLines = buildVerifyReportLines(results);
+  const lines = [...reportLines];
+  lines.push(kv("summary", `${results.length - failing.length}/${results.length} pass`));
+
+  const help = [];
+  if (failing.length) {
+    for (const r of failing) help.push(`Run \`brain verify --only ${r.check}\` to re-run just that check`);
+  } else {
+    help.push("All checks passing");
+  }
+
+  if (feat) {
+    const stepLabel = flags.only ? `verify --only ${flags.only}` : `verify --stage ${stage}`;
+    const { file, stepNumber } = appendRunStep(brain, feat.slug, {
+      step: stepLabel,
+      observed: reportLines.join("\n"),
+    });
+    lines.push("run-note:", kv("file", file, 2), kv("step", stepNumber, 2));
+    help.push(`Run \`brain watch ${feat.slug}\` to see the recorded run-note step in the execution dashboard`);
+  } else {
+    help.push("Pass --feature <slug> to record these results as a run-note step");
+  }
+
+  lines.push(...toonList("help", help));
+  print(lines);
+  if (failing.length) process.exit(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1958,6 +2192,301 @@ function cmdPlaybook(argv) {
 }
 
 // ---------------------------------------------------------------------------
+// Init — scaffold a minimal .brain skeleton (deliberately NOT the full example
+// brain: terse, placeholder-marked templates the project fills in itself).
+// ---------------------------------------------------------------------------
+
+// Any filesystem entry at p, including a broken symlink — fs.existsSync
+// follows symlinks and reports false for a dangling one, which would let us
+// clobber it. lstat doesn't follow, so it sees the link itself either way.
+function pathExistsAny(p) {
+  try {
+    fs.lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function writeInitFile(created, root, filePath, content) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, content);
+  // Paths in the created[] list read relative to the scaffolded root, not the
+  // invoker's cwd — `.brain/HARNESS.md`, never a ../../ chain out of --dir.
+  created.push(path.relative(root, filePath));
+}
+
+function initHarnessTemplate() {
+  return [
+    "# HARNESS.md — the harness, explained",
+    "",
+    '> One-stop explainer for what holds this project together for AI agents. Read this once when joining the repo; update it when the harness itself changes (not when individual features change — that\'s .brain/features/).',
+    "",
+    "This repo runs a 5-subsystem harness:",
+    "",
+    "1. **Instructions** — what to read before working. <name your instruction docs here — CLAUDE.md/AGENTS.md, .brain/rules/, .brain/codebase/, .brain/high-level-architecture/>",
+    "2. **State** — what's done, in progress, where things were left off. `features/feature_list.json` (status/dependencies/evidence) + `runs/progress.md` (rolling session cursor) + `runs/<date>-<slug>.md` (deep per-task state).",
+    "3. **Verification** — how to prove a change is correct. `.brain/verify.json` registers your project's real checks (typecheck/test/build/lint); `brain verify` runs them. <replace the placeholder check with your real commands>",
+    '4. **Scope** — what counts as "this task" (and what doesn\'t). `policy.one_in_progress_at_a_time` in `feature_list.json` enforces one feature in flight at a time. <add project-specific scope rules here>',
+    "5. **Lifecycle** — bootstrap, session handoff, clean restart. <describe how a fresh agent should pick this up — usually: run `brain` (or `npx -y brain-axi`), read `runs/progress.md`, check `brain features`>",
+    "",
+    "Operate this harness with the `brain` CLI (`npx -y brain-axi <command>` if it isn't installed on PATH): `brain features`, `brain progress`, `brain docs`, `brain search`, `brain check`, `brain verify`. Run `brain` with no arguments for the live dashboard.",
+    "",
+    "## Fill these in",
+    "",
+    "- [ ] Name the real doc locations for the Instructions layer above.",
+    "- [ ] Replace the placeholder check in `.brain/verify.json` with your real typecheck/test/build/lint commands.",
+    "- [ ] Add your first feature to `features/feature_list.json` (or via `brain features` once one exists).",
+    "- [ ] Fill in `rules/`, `recipes/`, `codebase/`, `high-level-architecture/` as real docs accumulate — the `index.md` stubs are placeholders.",
+    "- [ ] Describe any project-specific scope/lifecycle rules above.",
+    "",
+  ].join("\n");
+}
+
+function initFeatureListJson(today) {
+  const doc = {
+    $schema:
+      "Machine-readable feature state tracker. Source of truth for status; per-feature MD docs are source of truth for design/runtime.",
+    updated: today,
+    policy: {
+      one_in_progress_at_a_time: true,
+      definition_of_done:
+        "implementation complete + `brain verify` green + feature doc updated + `brain check` green",
+    },
+    features: [],
+  };
+  return JSON.stringify(doc, null, 2) + "\n";
+}
+
+function initFeaturesIndexMd() {
+  return [
+    "# Features",
+    "",
+    "One markdown doc per feature (design/runtime detail) lives alongside `feature_list.json`'s status/dependencies/evidence tracker, at `features/<slug>/<slug>.md`. Run `brain features` for the live list, `brain features view <slug>` for one feature's tracker fields + doc body.",
+    "",
+  ].join("\n");
+}
+
+function initRunsIndexMd() {
+  return [
+    "# Runs",
+    "",
+    "Per-task deep state lives here as `<YYYY-MM-DD>-<slug>.md` — one per non-trivial task (baselines, dead ends, decisions, verbatim command output). `progress.md` in this same directory is the rolling session cursor, not a run note — don't confuse the two. Run `brain runs` for the live list.",
+    "",
+  ].join("\n");
+}
+
+function initSectionIndexMd(title, body, cliSection) {
+  return [`# ${title}`, "", `${body} Run \`brain docs ${cliSection}\` for the live list.`, ""].join("\n");
+}
+
+function initVerifyJson() {
+  const doc = {
+    version: 1,
+    checks: [
+      {
+        name: "placeholder",
+        run: "echo replace this with your typecheck/test/build commands",
+        stages: ["bootstrap", "baseline", "verify"],
+      },
+    ],
+  };
+  return JSON.stringify(doc, null, 2) + "\n";
+}
+
+function initChangelogMd(today) {
+  return [
+    "# CHANGELOG",
+    "",
+    "High-level architectural / brain-harness shifts — not a code changelog (use `git log` for that).",
+    "",
+    `## ${today}`,
+    "",
+    "- Initialized `.brain/` via `brain init`.",
+    "",
+  ].join("\n");
+}
+
+function initProgressMd(today, branch) {
+  return [
+    "# Progress — rolling session log",
+    "",
+    '> Single rolling log of "where am I right now". Append-only. Newest entry on top. Per-task deep state lives in `<YYYY-MM-DD>-<slug>.md` in this same directory — this file is just the cursor.',
+    "",
+    "## How to use",
+    "",
+    "- **Start of session**: read the top entry to recover state.",
+    '- **During session**: append one checkpoint per meaningful step (decision, blocker, branch switch, test failure, scope change) via `brain progress add --summary "..."`.',
+    '- **End of session**: `brain progress add --summary "..." --next "..."` so the next session picks up cleanly.',
+    "",
+    "## Format per entry",
+    "",
+    "```",
+    "## YYYY-MM-DD — <one-line summary>",
+    "- branch: <branch-name>",
+    "- in-progress feature: <slug> | none",
+    "- run note: <path or none>",
+    "- next: <one sentence>",
+    "```",
+    "",
+    "---",
+    "",
+    "## " + today + " — brain initialized via `brain init`",
+    "- branch: `" + branch + "`",
+    "- in-progress feature: none",
+    "- run note: none",
+    "",
+  ].join("\n");
+}
+
+function initAgentsMd() {
+  return [
+    "# AGENTS.md",
+    "",
+    "This repo has a `.brain/` agent harness. Before starting any task:",
+    "",
+    "- Run `npx -y brain-axi` (or `brain`, if installed on PATH) for the live dashboard.",
+    "- Read `.brain/HARNESS.md` once — it explains the 5-subsystem harness (instructions, state, verification, scope, lifecycle) and where each piece lives.",
+    "",
+    "Bookend every non-trivial task:",
+    "",
+    "- `npx -y brain-axi playbook start` — before writing a line of code",
+    "- `npx -y brain-axi playbook done` — before declaring the task complete",
+    "",
+  ].join("\n");
+}
+
+function promptYesNo(question) {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(/^y(es)?$/i.test(answer.trim()));
+    });
+  });
+}
+
+function cmdInit(argv) {
+  const spec = {
+    "--dir": { value: true, desc: "target root directory to scaffold .brain into (default: cwd)" },
+    "--agents-md": { value: false, desc: "write an AGENTS.md pointer + CLAUDE.md symlink" },
+    "--no-agents-md": { value: false, desc: "skip the AGENTS.md pointer (default when non-interactive)" },
+    "--yes": { value: false, desc: "accept defaults non-interactively (skips the AGENTS.md prompt)" },
+  };
+  const { flags } = parseArgs(argv, spec, "init");
+  if (flags.help)
+    helpBlock(
+      "init",
+      "Scaffold a minimal .brain skeleton (5-subsystem harness stub) into a repo",
+      spec,
+      ["brain init", "brain init --dir ./my-repo", "brain init --agents-md", "brain init --yes"]
+    );
+  if (flags.brain !== undefined)
+    usageError("--brain is not meaningful for `init` — this command CREATES a .brain, it doesn't read one", [
+      "brain init [--dir <path>]  (defaults to scaffolding .brain in the current directory)",
+    ]);
+  if (flags["agents-md"] && flags["no-agents-md"])
+    usageError("pass either --agents-md or --no-agents-md, not both", [
+      "brain init --agents-md",
+      "brain init --no-agents-md",
+    ]);
+
+  const root = path.resolve(flags.dir || ".");
+  const brainDir = path.join(root, ".brain");
+  if (fs.existsSync(brainDir))
+    opError(`${path.relative(process.cwd(), brainDir)} already exists — already initialized`, [
+      "Run `brain` for the live dashboard, or `brain check` to verify the existing harness",
+    ]);
+
+  return initAsync(root, brainDir, flags);
+}
+
+async function initAsync(root, brainDir, flags) {
+  const today = new Date().toISOString().slice(0, 10);
+  const branch = resolveBranch(brainDir, undefined);
+  const created = [];
+  const skipped = [];
+
+  writeInitFile(created, root, path.join(brainDir, "HARNESS.md"), initHarnessTemplate());
+  writeInitFile(created, root, featureListPath(brainDir), initFeatureListJson(today));
+  writeInitFile(created, root, path.join(brainDir, DOC_SECTIONS.features, "index.md"), initFeaturesIndexMd());
+  writeInitFile(created, root, path.join(brainDir, "runs", "progress.md"), initProgressMd(today, branch));
+  writeInitFile(created, root, path.join(brainDir, "runs", "index.md"), initRunsIndexMd());
+  writeInitFile(
+    created,
+    root,
+    path.join(brainDir, DOC_SECTIONS.rules, "index.md"),
+    initSectionIndexMd("Rules", "Add layer-aligned do/don't rules here as they emerge — one doc per layer or concern.", "rules")
+  );
+  writeInitFile(
+    created,
+    root,
+    path.join(brainDir, DOC_SECTIONS.recipes, "index.md"),
+    initSectionIndexMd(
+      "Recipes",
+      'Add deterministic runbooks here (e.g. bookended by a "before task" and "verify done" recipe).',
+      "recipes"
+    )
+  );
+  writeInitFile(
+    created,
+    root,
+    path.join(brainDir, DOC_SECTIONS.codebase, "index.md"),
+    initSectionIndexMd(
+      "Codebase",
+      "Add programming-model docs here — language/framework conventions, key abstractions, module layout.",
+      "codebase"
+    )
+  );
+  writeInitFile(
+    created,
+    root,
+    path.join(brainDir, DOC_SECTIONS.architecture, "index.md"),
+    initSectionIndexMd("High-level architecture", "Add macro-view docs here — how the major pieces fit together.", "architecture")
+  );
+  writeInitFile(created, root, verifyConfigPath(brainDir), initVerifyJson());
+  writeInitFile(created, root, path.join(brainDir, "CHANGELOG.md"), initChangelogMd(today));
+
+  const explicitAgentsChoice =
+    flags["agents-md"] !== undefined || flags["no-agents-md"] !== undefined || flags.yes !== undefined;
+  const interactive = !explicitAgentsChoice && !!process.stdin.isTTY && !!process.stderr.isTTY;
+  const writeAgents = interactive
+    ? await promptYesNo("Write AGENTS.md pointer + CLAUDE.md symlink? [y/N] ")
+    : !!flags["agents-md"];
+
+  if (writeAgents) {
+    const agentsPath = path.join(root, "AGENTS.md");
+    const claudePath = path.join(root, "CLAUDE.md");
+    if (pathExistsAny(agentsPath)) {
+      process.stderr.write(`warning: ${collapseHome(agentsPath)} already exists — leaving it untouched\n`);
+      skipped.push(`${path.relative(root, agentsPath)} (already exists)`);
+    } else {
+      writeInitFile(created, root, agentsPath, initAgentsMd());
+    }
+    if (pathExistsAny(claudePath)) {
+      process.stderr.write(`warning: ${collapseHome(claudePath)} already exists — leaving it untouched\n`);
+      skipped.push(`${path.relative(root, claudePath)} (already exists)`);
+    } else {
+      fs.symlinkSync("AGENTS.md", claudePath);
+      created.push(`${path.relative(root, claudePath)} -> AGENTS.md`);
+    }
+  }
+
+  const verifyRel = path.relative(root, verifyConfigPath(brainDir));
+  const lines = [kv("root", collapseHome(root)), ...toonList("created", created)];
+  if (skipped.length) lines.push(...toonList("skipped", skipped));
+  lines.push(
+    ...toonList("help", [
+      `Edit ${verifyRel} with your real typecheck/test/build commands`,
+      "Run `brain setup --app claude` to install the session-start context hook",
+      "Run `brain playbook start` to begin the first task",
+      "Run `brain check` to verify the new harness",
+    ])
+  );
+  print(lines);
+}
+
+// ---------------------------------------------------------------------------
 // Setup — session hook installation (explicit opt-in, idempotent, path repair)
 // ---------------------------------------------------------------------------
 
@@ -2140,11 +2669,37 @@ description: ${JSON.stringify(description)}
 
 All commands print TOON-structured output. Run from anywhere inside the repo; the CLI walks up to find \`.brain/\`. If \`brain\` is not on PATH, use \`npx -y brain-axi <command>\`.
 
+## Playbooks (\`brain playbook <id>\`)
+
+Five standing playbooks — each a full text standard printed by \`brain playbook <id>\`, meant to be followed step by step while doing the thing it names:
+
+- \`start\` — starting any non-trivial task — frame it, read the brain, baseline, open state
+- \`plan\` — writing any plan/proposal/design artifact for human review
+- \`verify\` — verifying a user-visible feature works — browser walk with screenshot evidence
+- \`execute\` — implementing an approved plan / working a feature to shipped
+- \`done\` — before declaring any task complete — full verify, harness invariants, coherence
+
+Run \`brain playbook\` for the live id/use_when index; \`brain playbook <id>\` for the full text. Referenced inline below at the point each one applies.
+
+## No \`.brain/\` yet?
+
+- \`npx -y brain-axi init\` — scaffolds a minimal .brain skeleton (HARNESS.md,
+  feature_list.json, progress.md with a first checkpoint, verify.json, doc
+  section stubs) into the current repo, terse and placeholder-marked for the
+  project to fill in. Errors (exit 1) if \`.brain/\` already exists — never
+  clobbers. \`--agents-md\` also writes an AGENTS.md pointer + CLAUDE.md
+  symlink; interactively prompts for that choice only in a real terminal,
+  else skips it by default.
+
 ## Orient (start of session)
 
 - \`brain\` — dashboard: feature counts, in-progress feature, last checkpoint
 - \`brain progress\` — latest session checkpoint in full (branch, next step)
 - \`brain features\` — feature list with status
+- \`npx -y brain-axi playbook start\` — starting any non-trivial task: read brain
+  state, frame intent/scope/affected feature(s), read the relevant docs, check
+  scope policy (\`brain check\`), establish a baseline (\`brain verify --stage
+  baseline\`), then claim + open state — before writing a line of code
 
 ## Look things up (during work)
 
@@ -2158,8 +2713,34 @@ All commands print TOON-structured output. Run from anywhere inside the repo; th
 
 - \`brain progress add --summary "..." --next "..."\` — append a session checkpoint
 - \`brain features set-status <slug> --status <planned|in-progress|shipped|blocked|cut>\` — flip feature state (enforces one-in-progress policy; \`--status shipped\` requires \`--evidence\`)
-- \`brain check\` — deterministic harness invariants (feature list validity, one-in-progress, doc paths, dependency refs, plan/review file integrity, verification docs); exit 1 on any failure, CI-usable
+- \`brain check\` — deterministic harness invariants (feature list validity, one-in-progress, doc paths, dependency refs, plan/review file integrity, verification docs, verify.json shape when present); exit 1 on any failure, CI-usable
 - \`brain\` (home) shows an open \`sessions[...]\` table whenever a review session isn't ended yet
+
+## Verify — run declared project checks (\`.brain/verify.json\`)
+
+\`.brain/verify.json\` registers the project's own checks (typecheck, tests,
+lint, e2e, ...) so an agent runs the SAME commands the project actually uses
+instead of guessing. Shape:
+
+\`\`\`json
+{"version":1,"checks":[{"name":"typecheck","run":"bun run typecheck","stages":["baseline","verify"]}]}
+\`\`\`
+
+Each check: \`name\` (unique), \`run\` (shell command), \`stages\` (non-empty subset
+of \`bootstrap|baseline|verify\`), optional \`timeout\` in seconds (default 300).
+
+- \`brain verify\` — runs every check whose \`stages\` includes \`verify\` (the
+  default), sequentially and in registry order (checks may share
+  caches/DBs — never parallelized), from the repo root. Reports
+  \`results[]{check,status,exit,seconds}\` plus a \`tail_<name>:\` block (last 15
+  lines of combined output) for every non-pass check. Exits 1 if any executed
+  check fails or times out; exits 0 (no-op) if zero checks match the stage.
+- \`brain verify --stage bootstrap|baseline|verify\` — run a different stage.
+- \`brain verify --only <name>\` — run just one check by name; wins over \`--stage\`.
+- \`brain verify --feature <slug>\` — also appends the results verbatim as a
+  run-note step under that feature (same write path as \`runs append\`).
+- Missing or malformed \`.brain/verify.json\` exits 1 with a copy-pasteable
+  registry snippet in the \`help:\` lines — self-serve, no need to ask.
 
 ## Feature-centric \`.brain/\` layout
 
@@ -2234,6 +2815,17 @@ without rolling back the ship). \`runs/progress.md\` stays a rolling cursor;
   It live-updates as the commands above write state.
 - After opening a PR, record it: \`npx -y brain-axi pr <slug> --url <pr-url>\`
   — this is the dashboard's terminal state (approval → execution → PR).
+
+## Before declaring any task complete
+
+Run \`npx -y brain-axi playbook done\` and follow it before saying a task is
+finished. Short version: full \`brain verify\` (green, or fix and \`--only
+<name>\`) → feature verification for user-visible work (\`playbook verify\`,
+not duplicated here) → \`brain check\` (harness invariants) → brain coherence
+(every changed path's owning doc updated, or flagged) → close state
+(\`runs append\`, \`progress add\`, \`brain ship <slug> --evidence "..."\` if the
+feature itself is done). Anything unmet → say what's blocking, don't declare
+done.
 
 ## Plan review (human-in-the-loop) — the DEFAULT for plans and approvals
 
@@ -2328,6 +2920,7 @@ function cmdSkill(argv) {
 // ---------------------------------------------------------------------------
 
 const COMMANDS = {
+  init: cmdInit,
   features: cmdFeatures,
   progress: cmdProgress,
   runs: cmdRuns,
@@ -2343,6 +2936,7 @@ const COMMANDS = {
   timeline: cmdTimeline,
   playbook: cmdPlaybook,
   check: cmdCheck,
+  verify: cmdVerify,
   ship: cmdShip,
   watch: cmdWatch,
   pr: cmdPr,
