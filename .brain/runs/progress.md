@@ -21,6 +21,13 @@
 
 ---
 
+## 2026-07-23 — shipped harness-mode: verify 2/2 pass recorded as run-note step 5 (features/harness-mode/runs/2026-07-23-progress.md); brain check 10 rows all
+- branch: `feat/harness-mode`
+- in-progress feature: none
+- run note: none
+
+---
+
 ## 2026-07-23 — Plan harness-parity reviewed round 2: all decisions locked (verify.json registry, one verify verb --stage, opt-in --feature recording, bootstrap stage in, setup --commands deferred, brain init promoted to Phase 3). feat-005 harness-mode opened in-progress on feat/harness-mode. Starting Phase 1: cmdVerify.
 - branch: `feat/harness-mode`
 - in-progress feature: none

@@ -9,6 +9,8 @@
 - **Keep `setup` idempotent** — re-running repairs stale paths and JSON-merges into existing settings without clobbering.
 - **Update `skillContent()` in the same change** whenever you add/rename a command, change a flag, or change guidance. Then run `node bin/brain.js skill --check` — it must exit 0.
 - **`ship` / `set-status shipped` require `--evidence`** (non-empty). Evidence strings come from real command output — never invented.
+- **`verify` runs the declared registry (`.brain/verify.json`) sequentially from the repo root.** Stages are exactly `bootstrap|baseline|verify` (default `verify`); `--only <name>` wins over `--stage`; per-check timeout defaults to 300s. Aggregate exit 1 on any fail/timeout, but the results table still prints first (cmdCheck idiom, not opError). `--feature <slug>` appends the results verbatim as a run-note step — validate the slug BEFORE running any check.
+- **`init` writes prompts/warnings to stderr only** — stdout stays TOON (`created[]`/`skipped[]` + `help:`). It never clobbers: existing `.brain/` → opError; existing AGENTS.md/CLAUDE.md → skip + warn. Interactive questions only when stdin+stderr are TTYs and no deciding flag was passed.
 
 ## Don't
 

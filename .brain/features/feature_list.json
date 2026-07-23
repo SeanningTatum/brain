@@ -73,8 +73,8 @@
       "dependencies": [
         "core-cli"
       ],
-      "status": "in-progress",
-      "evidence": "",
+      "status": "shipped",
+      "evidence": "verify 2/2 pass recorded as run-note step 5 (features/harness-mode/runs/2026-07-23-progress.md); brain check 10 rows all-pass incl. verify.json registry row; skill --check exit 0; init scaffold round-trip verified in scratch (check/verify/context/progress all exit 0, re-init opError, AGENTS.md+CLAUDE.md symlink); non-negotiables sweep 0 hits on 2749-line diff",
       "owners": [
         "sean"
       ]

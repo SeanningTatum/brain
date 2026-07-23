@@ -29,7 +29,8 @@ No test framework in this repo — verification = invoking the CLI against `.bra
 
 | File | Role |
 |------|------|
-| `bin/brain.js` | `cmdVerify`, `loadVerifyConfig`, playbook texts, `cmdInit`, check row, `skillContent()` sync |
+| `bin/brain.js` | `cmdVerify` + `loadVerifyConfig` + `runVerifyCheck`, `cmdInit` + `init*` template fns, check row, `skillContent()` sync |
+| `lib/review/playbooks.js` | `start` and `done` playbook entries (PLAYBOOKS is defined here, not in bin) |
 | `.brain/verify.json` | dogfood registry (skill --check, brain check) |
 
 ## Dependencies
