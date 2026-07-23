@@ -16,10 +16,23 @@ The output is [TOON](https://toonformat.dev/), not JSON or prose: minimal defaul
 
 ## Quick start
 
+**Recommended — install the skill, not the package:**
+
 ```sh
+npx skills add SeanningTatum/brain-axi --skill brain
+```
+
+This installs `.claude/skills/brain/SKILL.md` into your repo via the
+[Agent Skills](https://agentskills.io) format ([`npx skills`](https://github.com/vercel-labs/skills)
+— add `-g` for a global, cross-repo install). Any skill-aware agent
+loads it on demand and learns the whole command surface from it — no
+`package.json` dependency, no session hook required.
+
+**Or run the CLI straight from a checkout**, no skill involved:
+
+```sh
+git clone https://github.com/SeanningTatum/brain-axi.git && cd brain-axi
 npm link                          # puts `brain` on PATH from this checkout
-# or, without installing anything:
-npx -y brain-axi <command>
 ```
 
 Requires Node 18+. No dependencies, no build step, no config file.
@@ -121,14 +134,28 @@ An empty result is still a definitive answer — no ambiguity about whether the 
 
 Two complementary paths — install either or both:
 
-1. **Session hook (recommended)** — `brain setup --app claude` (or `codex` / `opencode` / `copilot` / `all`). Every new agent session in the repo starts with the compact `brain context` dashboard: live feature state, last checkpoint, next step. Re-running repairs the hook path after a reinstall; repeated runs are no-ops.
-2. **Agent skill (lower overhead, broader support)** — `brain skill --write` generates `.claude/skills/brain/SKILL.md`, loadable on demand by any skill-aware agent (`npx skills add <owner>/<repo> --skill brain`). No per-session token cost; static guidance only. `brain skill --check` exits 1 if the committed file has drifted from the CLI's real commands — wire it into CI.
+1. **Agent skill (recommended — this is the `npx skills add` install above)** — on-demand, zero per-session token cost, static guidance only. If you generated it yourself instead of installing from GitHub: `brain skill --write` writes `.claude/skills/brain/SKILL.md`; `brain skill --check` exits 1 if the committed file has drifted from the CLI's real commands — wire it into CI.
+2. **Session hook (ambient, always-on)** — `brain setup --app claude` (or `codex` / `opencode` / `copilot` / `all`). Every new agent session in the repo starts with the compact `brain context` dashboard: live feature state, last checkpoint, next step. Re-running repairs the hook path after a reinstall; repeated runs are no-ops. Requires a local checkout (this hook shells out to the CLI directly, so it needs `brain` resolvable — either on `PATH` or as a project devDependency).
+
+## Plan review
+
+`brain review <plan.html>` opens an HTML plan artifact in the browser next to a composer sidebar — round indicator, draft badge, the decisions and context queued for this round, and a message box for sending feedback straight back to the agent. The agent's own long-poll (`brain review poll`) picks up whatever gets sent, so review happens without either side leaving their tool.
+
+<img src="docs/assets/plan-review.png" alt="Screenshot of a brain review session: a rendered HTML plan on the left, composer sidebar with round indicator and message box on the right" width="700">
 
 ## Screenshot review loop
 
-Screenshots captured with `brain shots add <img> --feature <slug> --step NN-name` are never opened one-tab-per-image: the `/watch/<feature>` execution dashboard (`brain watch <feature>`) and a `brain review` session's execution sidebar both render them in a shared in-page carousel — arrows, ←/→/Esc, counter, captions, filmstrip, and a placeholder for a missing file.
+`brain watch <feature>` opens a live execution dashboard for a feature: its status pipeline (plan approved → in-progress → run steps → verification → shipped → PR opened), run-step logs, checkpoints, and screenshots — everything an agent produced while working the feature, in one page.
+
+<img src="docs/assets/execution-dashboard.png" alt="Screenshot of the brain watch execution dashboard showing a feature's status pipeline, run steps, checkpoints, and screenshot filmstrip" width="700">
+
+Screenshots captured with `brain shots add <img> --feature <slug> --step NN-name` are never opened one-tab-per-image: the dashboard above and a `brain review` session's execution sidebar both render them in a shared in-page carousel — arrows, ←/→/Esc, counter, captions, filmstrip, and a placeholder for a missing file.
+
+<img src="docs/assets/carousel-lightbox.png" alt="Screenshot of the shared lightbox carousel open over a screenshot, with arrow navigation and a filmstrip of thumbnails" width="700">
 
 Toggle **Annotate** in the carousel and click a screenshot to drop a numbered pin at that x/y and write a note:
+
+<img src="docs/assets/annotate-pin.png" alt="Screenshot of the lightbox in Annotate mode with a numbered pin dropped on the screenshot" width="700">
 
 - On the dashboard, the pin saves as an unsent draft. "Send N pins to Claude" (the topbar button, or the toast shown right after pinning) hands the whole batch to the agent and stamps it sent.
 - In a review session's sidebar, the same pin instead queues immediately as a screenshot-tagged prompt in the composer, delivered on the next Send like any other annotation, through the normal `brain review poll` loop.
