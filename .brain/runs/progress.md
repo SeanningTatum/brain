@@ -21,6 +21,21 @@
 
 ---
 
+## 2026-07-23 — harness-mode shipped + PR #8 opened: https://github.com/SeanningTatum/brain-axi/pull/8 — brain verify (registry runner), start/done playbooks, brain init scaffolder. 4 commits on feat/harness-mode. Deferred: setup --commands (D0). Uncommitted README/asset work from a prior session left untouched.
+- branch: `feat/harness-mode`
+- in-progress feature: none
+- run note: none
+- next: Await PR review/merge; adopt in cf-saas-starter (replace init.sh/harness-check.sh with verify.json); revisit setup --commands after real-repo usage
+
+---
+
+## 2026-07-23 — PR opened for harness-mode: https://github.com/SeanningTatum/brain-axi/pull/8
+- branch: `feat/harness-mode`
+- in-progress feature: none
+- run note: none
+
+---
+
 ## 2026-07-23 — shipped harness-mode: verify 2/2 pass recorded as run-note step 5 (features/harness-mode/runs/2026-07-23-progress.md); brain check 10 rows all
 - branch: `feat/harness-mode`
 - in-progress feature: none
