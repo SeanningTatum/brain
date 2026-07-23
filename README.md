@@ -14,6 +14,16 @@ Every new agent session starts from zero. It re-reads the codebase, re-derives w
 
 The output is [TOON](https://toonformat.dev/), not JSON or prose: minimal default schemas, pre-computed counts, truncated bodies with a `--full` escape hatch, definitive empty states, and a `help:` block at the end of *every* command teaching the agent what to run next. That last part matters — the CLI's own output is how agents learn to use it, so a fresh agent with no prior context can bootstrap correctly on the first invocation.
 
+## The intended way to use it
+
+Don't drive `brain` by hand. **Install the skill and let a coding agent use it.**
+
+`brain` is built for agent ergonomics, not human ones — TOON output, a `help:` block teaching the next command on every result, exit codes as a contract. Those are affordances for an LLM shelling out mid-task, not a CLI you sit and type at. The whole design assumes an agent is the operator and you are the reader of what it wrote down.
+
+So the flow is: install the [`brain` skill](#quick-start) once, then just work normally. When you ask your agent to plan a feature, check what's in progress, or record where it left off, it discovers the right `brain` command from the skill and runs it — reading `.brain/` before a task, searching rules and recipes during, checkpointing progress and flipping feature status after. You get a durable project brain as a side effect of the agent doing its job; you rarely type `brain` yourself.
+
+Everything below documents the command surface for completeness — but reach for the skill first, and only run commands directly when you're debugging the CLI itself.
+
 ## Quick start
 
 **Recommended — install the skill, not the package:**
