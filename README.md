@@ -101,7 +101,7 @@ Every command supports `--help` (self-documenting) and a global `--brain <path>`
 |---|---|
 | `brain context` | Compact dashboard used by session-start hooks (silent, exit 0, outside a brain repo) |
 | `brain setup --app <claude\|codex\|opencode\|copilot\|all>` | Install a SessionStart hook that injects `brain context` |
-| `brain skill [--write\|--check]` | Generate/verify the installable agent skill (`skills/brain/SKILL.md`); `--check` is CI-friendly |
+| `brain skill [--write\|--check]` | Generate/verify the installable agent skill (`.claude/skills/brain/SKILL.md`); `--check` is CI-friendly |
 | `brain check` | Run deterministic harness invariant checks (CI-usable: exit 1 on any failure) |
 
 **Exit codes**: `0` success (including no-ops), `1` operation error, `2` usage error. Errors print to stdout as `error:` + `help:` lines — stdout is always the parseable payload, stderr stays diagnostics-only.
@@ -122,7 +122,7 @@ An empty result is still a definitive answer — no ambiguity about whether the 
 Two complementary paths — install either or both:
 
 1. **Session hook (recommended)** — `brain setup --app claude` (or `codex` / `opencode` / `copilot` / `all`). Every new agent session in the repo starts with the compact `brain context` dashboard: live feature state, last checkpoint, next step. Re-running repairs the hook path after a reinstall; repeated runs are no-ops.
-2. **Agent skill (lower overhead, broader support)** — `brain skill --write` generates `skills/brain/SKILL.md`, loadable on demand by any skill-aware agent (`npx skills add <owner>/<repo> --skill brain`). No per-session token cost; static guidance only. `brain skill --check` exits 1 if the committed file has drifted from the CLI's real commands — wire it into CI.
+2. **Agent skill (lower overhead, broader support)** — `brain skill --write` generates `.claude/skills/brain/SKILL.md`, loadable on demand by any skill-aware agent (`npx skills add <owner>/<repo> --skill brain`). No per-session token cost; static guidance only. `brain skill --check` exits 1 if the committed file has drifted from the CLI's real commands — wire it into CI.
 
 ## Screenshot review loop
 

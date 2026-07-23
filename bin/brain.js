@@ -2277,7 +2277,7 @@ Every command supports \`--help\`. Errors print an \`error:\` line plus a \`help
 
 function cmdSkill(argv) {
   const spec = {
-    "--write": { value: false, desc: "write skills/brain/SKILL.md at the repo root" },
+    "--write": { value: false, desc: "write .claude/skills/brain/SKILL.md at the repo root" },
     "--check": { value: false, desc: "exit 1 if the committed skill file is stale (for CI)" },
   };
   const { flags } = parseArgs(argv, spec, "skill");
@@ -2290,7 +2290,7 @@ function cmdSkill(argv) {
     return;
   }
   const brain = findBrain(flags.brain);
-  const skillPath = path.join(path.dirname(brain), "skills", "brain", "SKILL.md");
+  const skillPath = path.join(path.dirname(brain), ".claude", "skills", "brain", "SKILL.md");
   if (flags.check) {
     if (fs.existsSync(skillPath) && fs.readFileSync(skillPath, "utf8") === content) {
       print([`skill: ${path.relative(process.cwd(), skillPath)} is up to date`]);
