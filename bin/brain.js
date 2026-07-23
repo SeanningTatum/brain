@@ -2125,9 +2125,15 @@ function cmdSetup(argv) {
 
 function skillContent() {
   // Static by design: strips live state, uses npx-runnable command forms.
+  // Description is YAML double-quoted: it contains a mid-string ": " (colon
+  // + space), which is invalid in an unquoted YAML plain scalar — some
+  // frontmatter parsers (e.g. the `npx skills` installer) silently drop the
+  // whole skill on a parse failure rather than erroring loudly.
+  const description =
+    "Query and update a repo's .brain agent harness (features, progress checkpoints, rules, recipes, run notes, human plan reviews). Use when working in a repo with a .brain directory — before starting a task (read state), during (search docs/rules), and after (checkpoint progress, flip feature status). ALSO use whenever the user asks for a plan, proposal, design, or review of an approach: write the plan as an HTML artifact and open an interactive brain review session in their browser instead of printing the plan in chat.";
   return `---
 name: brain
-description: Query and update a repo's .brain agent harness (features, progress checkpoints, rules, recipes, run notes, human plan reviews). Use when working in a repo with a .brain directory — before starting a task (read state), during (search docs/rules), and after (checkpoint progress, flip feature status). ALSO use whenever the user asks for a plan, proposal, design, or review of an approach: write the plan as an HTML artifact and open an interactive brain review session in their browser instead of printing the plan in chat.
+description: ${JSON.stringify(description)}
 ---
 
 # brain — .brain harness CLI
