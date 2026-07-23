@@ -1961,8 +1961,17 @@ function cmdPlaybook(argv) {
 // Setup — session hook installation (explicit opt-in, idempotent, path repair)
 // ---------------------------------------------------------------------------
 
-function resolveHookCommand() {
-  // Prefer a PATH-verified binary name when it resolves to this executable.
+function resolveHookCommand(repoRoot) {
+  // Prefer a $CLAUDE_PROJECT_DIR-relative path when installed as a local
+  // node_modules dependency: this is committed into settings.json, so it must
+  // work for every teammate/CI that installs via the lockfile — not just the
+  // operator running `setup`, whose machine may also happen to have a global
+  // link that wouldn't exist for anyone else.
+  const localBin = path.join(repoRoot, "node_modules", ".bin", "brain");
+  if (fs.existsSync(localBin) && fs.realpathSync(localBin) === fs.realpathSync(BIN_PATH)) {
+    return `"$CLAUDE_PROJECT_DIR/node_modules/.bin/brain" context`;
+  }
+  // Next, a PATH-verified binary name when it resolves to this executable.
   try {
     const onPath = execFileSync("which", ["brain"], { stdio: ["ignore", "pipe", "ignore"] })
       .toString().trim();
@@ -2088,7 +2097,7 @@ function cmdSetup(argv) {
 
   const brain = findBrain(flags.brain);
   const repoRoot = path.dirname(brain);
-  const command = resolveHookCommand();
+  const command = resolveHookCommand(repoRoot);
   const targets = flags.app === "all" ? ["claude", "codex", "opencode", "copilot"] : [flags.app];
 
   const rows = [];
@@ -2268,7 +2277,7 @@ Every command supports \`--help\`. Errors print an \`error:\` line plus a \`help
 
 function cmdSkill(argv) {
   const spec = {
-    "--write": { value: false, desc: "write skills/brain/SKILL.md at the repo root" },
+    "--write": { value: false, desc: "write .claude/skills/brain/SKILL.md at the repo root" },
     "--check": { value: false, desc: "exit 1 if the committed skill file is stale (for CI)" },
   };
   const { flags } = parseArgs(argv, spec, "skill");
@@ -2281,7 +2290,7 @@ function cmdSkill(argv) {
     return;
   }
   const brain = findBrain(flags.brain);
-  const skillPath = path.join(path.dirname(brain), "skills", "brain", "SKILL.md");
+  const skillPath = path.join(path.dirname(brain), ".claude", "skills", "brain", "SKILL.md");
   if (flags.check) {
     if (fs.existsSync(skillPath) && fs.readFileSync(skillPath, "utf8") === content) {
       print([`skill: ${path.relative(process.cwd(), skillPath)} is up to date`]);
