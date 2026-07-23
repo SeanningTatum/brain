@@ -19,6 +19,16 @@ Five standing playbooks — each a full text standard printed by `brain playbook
 
 Run `brain playbook` for the live id/use_when index; `brain playbook <id>` for the full text. Referenced inline below at the point each one applies.
 
+## No `.brain/` yet?
+
+- `npx -y brain-axi init` — scaffolds a minimal .brain skeleton (HARNESS.md,
+  feature_list.json, progress.md with a first checkpoint, verify.json, doc
+  section stubs) into the current repo, terse and placeholder-marked for the
+  project to fill in. Errors (exit 1) if `.brain/` already exists — never
+  clobbers. `--agents-md` also writes an AGENTS.md pointer + CLAUDE.md
+  symlink; interactively prompts for that choice only in a real terminal,
+  else skips it by default.
+
 ## Orient (start of session)
 
 - `brain` — dashboard: feature counts, in-progress feature, last checkpoint

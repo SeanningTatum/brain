@@ -6,6 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import readline from "node:readline";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -2191,6 +2192,301 @@ function cmdPlaybook(argv) {
 }
 
 // ---------------------------------------------------------------------------
+// Init — scaffold a minimal .brain skeleton (deliberately NOT the full example
+// brain: terse, placeholder-marked templates the project fills in itself).
+// ---------------------------------------------------------------------------
+
+// Any filesystem entry at p, including a broken symlink — fs.existsSync
+// follows symlinks and reports false for a dangling one, which would let us
+// clobber it. lstat doesn't follow, so it sees the link itself either way.
+function pathExistsAny(p) {
+  try {
+    fs.lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function writeInitFile(created, root, filePath, content) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, content);
+  // Paths in the created[] list read relative to the scaffolded root, not the
+  // invoker's cwd — `.brain/HARNESS.md`, never a ../../ chain out of --dir.
+  created.push(path.relative(root, filePath));
+}
+
+function initHarnessTemplate() {
+  return [
+    "# HARNESS.md — the harness, explained",
+    "",
+    '> One-stop explainer for what holds this project together for AI agents. Read this once when joining the repo; update it when the harness itself changes (not when individual features change — that\'s .brain/features/).',
+    "",
+    "This repo runs a 5-subsystem harness:",
+    "",
+    "1. **Instructions** — what to read before working. <name your instruction docs here — CLAUDE.md/AGENTS.md, .brain/rules/, .brain/codebase/, .brain/high-level-architecture/>",
+    "2. **State** — what's done, in progress, where things were left off. `features/feature_list.json` (status/dependencies/evidence) + `runs/progress.md` (rolling session cursor) + `runs/<date>-<slug>.md` (deep per-task state).",
+    "3. **Verification** — how to prove a change is correct. `.brain/verify.json` registers your project's real checks (typecheck/test/build/lint); `brain verify` runs them. <replace the placeholder check with your real commands>",
+    '4. **Scope** — what counts as "this task" (and what doesn\'t). `policy.one_in_progress_at_a_time` in `feature_list.json` enforces one feature in flight at a time. <add project-specific scope rules here>',
+    "5. **Lifecycle** — bootstrap, session handoff, clean restart. <describe how a fresh agent should pick this up — usually: run `brain` (or `npx -y brain-axi`), read `runs/progress.md`, check `brain features`>",
+    "",
+    "Operate this harness with the `brain` CLI (`npx -y brain-axi <command>` if it isn't installed on PATH): `brain features`, `brain progress`, `brain docs`, `brain search`, `brain check`, `brain verify`. Run `brain` with no arguments for the live dashboard.",
+    "",
+    "## Fill these in",
+    "",
+    "- [ ] Name the real doc locations for the Instructions layer above.",
+    "- [ ] Replace the placeholder check in `.brain/verify.json` with your real typecheck/test/build/lint commands.",
+    "- [ ] Add your first feature to `features/feature_list.json` (or via `brain features` once one exists).",
+    "- [ ] Fill in `rules/`, `recipes/`, `codebase/`, `high-level-architecture/` as real docs accumulate — the `index.md` stubs are placeholders.",
+    "- [ ] Describe any project-specific scope/lifecycle rules above.",
+    "",
+  ].join("\n");
+}
+
+function initFeatureListJson(today) {
+  const doc = {
+    $schema:
+      "Machine-readable feature state tracker. Source of truth for status; per-feature MD docs are source of truth for design/runtime.",
+    updated: today,
+    policy: {
+      one_in_progress_at_a_time: true,
+      definition_of_done:
+        "implementation complete + `brain verify` green + feature doc updated + `brain check` green",
+    },
+    features: [],
+  };
+  return JSON.stringify(doc, null, 2) + "\n";
+}
+
+function initFeaturesIndexMd() {
+  return [
+    "# Features",
+    "",
+    "One markdown doc per feature (design/runtime detail) lives alongside `feature_list.json`'s status/dependencies/evidence tracker, at `features/<slug>/<slug>.md`. Run `brain features` for the live list, `brain features view <slug>` for one feature's tracker fields + doc body.",
+    "",
+  ].join("\n");
+}
+
+function initRunsIndexMd() {
+  return [
+    "# Runs",
+    "",
+    "Per-task deep state lives here as `<YYYY-MM-DD>-<slug>.md` — one per non-trivial task (baselines, dead ends, decisions, verbatim command output). `progress.md` in this same directory is the rolling session cursor, not a run note — don't confuse the two. Run `brain runs` for the live list.",
+    "",
+  ].join("\n");
+}
+
+function initSectionIndexMd(title, body, cliSection) {
+  return [`# ${title}`, "", `${body} Run \`brain docs ${cliSection}\` for the live list.`, ""].join("\n");
+}
+
+function initVerifyJson() {
+  const doc = {
+    version: 1,
+    checks: [
+      {
+        name: "placeholder",
+        run: "echo replace this with your typecheck/test/build commands",
+        stages: ["bootstrap", "baseline", "verify"],
+      },
+    ],
+  };
+  return JSON.stringify(doc, null, 2) + "\n";
+}
+
+function initChangelogMd(today) {
+  return [
+    "# CHANGELOG",
+    "",
+    "High-level architectural / brain-harness shifts — not a code changelog (use `git log` for that).",
+    "",
+    `## ${today}`,
+    "",
+    "- Initialized `.brain/` via `brain init`.",
+    "",
+  ].join("\n");
+}
+
+function initProgressMd(today, branch) {
+  return [
+    "# Progress — rolling session log",
+    "",
+    '> Single rolling log of "where am I right now". Append-only. Newest entry on top. Per-task deep state lives in `<YYYY-MM-DD>-<slug>.md` in this same directory — this file is just the cursor.',
+    "",
+    "## How to use",
+    "",
+    "- **Start of session**: read the top entry to recover state.",
+    '- **During session**: append one checkpoint per meaningful step (decision, blocker, branch switch, test failure, scope change) via `brain progress add --summary "..."`.',
+    '- **End of session**: `brain progress add --summary "..." --next "..."` so the next session picks up cleanly.',
+    "",
+    "## Format per entry",
+    "",
+    "```",
+    "## YYYY-MM-DD — <one-line summary>",
+    "- branch: <branch-name>",
+    "- in-progress feature: <slug> | none",
+    "- run note: <path or none>",
+    "- next: <one sentence>",
+    "```",
+    "",
+    "---",
+    "",
+    "## " + today + " — brain initialized via `brain init`",
+    "- branch: `" + branch + "`",
+    "- in-progress feature: none",
+    "- run note: none",
+    "",
+  ].join("\n");
+}
+
+function initAgentsMd() {
+  return [
+    "# AGENTS.md",
+    "",
+    "This repo has a `.brain/` agent harness. Before starting any task:",
+    "",
+    "- Run `npx -y brain-axi` (or `brain`, if installed on PATH) for the live dashboard.",
+    "- Read `.brain/HARNESS.md` once — it explains the 5-subsystem harness (instructions, state, verification, scope, lifecycle) and where each piece lives.",
+    "",
+    "Bookend every non-trivial task:",
+    "",
+    "- `npx -y brain-axi playbook start` — before writing a line of code",
+    "- `npx -y brain-axi playbook done` — before declaring the task complete",
+    "",
+  ].join("\n");
+}
+
+function promptYesNo(question) {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(/^y(es)?$/i.test(answer.trim()));
+    });
+  });
+}
+
+function cmdInit(argv) {
+  const spec = {
+    "--dir": { value: true, desc: "target root directory to scaffold .brain into (default: cwd)" },
+    "--agents-md": { value: false, desc: "write an AGENTS.md pointer + CLAUDE.md symlink" },
+    "--no-agents-md": { value: false, desc: "skip the AGENTS.md pointer (default when non-interactive)" },
+    "--yes": { value: false, desc: "accept defaults non-interactively (skips the AGENTS.md prompt)" },
+  };
+  const { flags } = parseArgs(argv, spec, "init");
+  if (flags.help)
+    helpBlock(
+      "init",
+      "Scaffold a minimal .brain skeleton (5-subsystem harness stub) into a repo",
+      spec,
+      ["brain init", "brain init --dir ./my-repo", "brain init --agents-md", "brain init --yes"]
+    );
+  if (flags.brain !== undefined)
+    usageError("--brain is not meaningful for `init` — this command CREATES a .brain, it doesn't read one", [
+      "brain init [--dir <path>]  (defaults to scaffolding .brain in the current directory)",
+    ]);
+  if (flags["agents-md"] && flags["no-agents-md"])
+    usageError("pass either --agents-md or --no-agents-md, not both", [
+      "brain init --agents-md",
+      "brain init --no-agents-md",
+    ]);
+
+  const root = path.resolve(flags.dir || ".");
+  const brainDir = path.join(root, ".brain");
+  if (fs.existsSync(brainDir))
+    opError(`${path.relative(process.cwd(), brainDir)} already exists — already initialized`, [
+      "Run `brain` for the live dashboard, or `brain check` to verify the existing harness",
+    ]);
+
+  return initAsync(root, brainDir, flags);
+}
+
+async function initAsync(root, brainDir, flags) {
+  const today = new Date().toISOString().slice(0, 10);
+  const branch = resolveBranch(brainDir, undefined);
+  const created = [];
+  const skipped = [];
+
+  writeInitFile(created, root, path.join(brainDir, "HARNESS.md"), initHarnessTemplate());
+  writeInitFile(created, root, featureListPath(brainDir), initFeatureListJson(today));
+  writeInitFile(created, root, path.join(brainDir, DOC_SECTIONS.features, "index.md"), initFeaturesIndexMd());
+  writeInitFile(created, root, path.join(brainDir, "runs", "progress.md"), initProgressMd(today, branch));
+  writeInitFile(created, root, path.join(brainDir, "runs", "index.md"), initRunsIndexMd());
+  writeInitFile(
+    created,
+    root,
+    path.join(brainDir, DOC_SECTIONS.rules, "index.md"),
+    initSectionIndexMd("Rules", "Add layer-aligned do/don't rules here as they emerge — one doc per layer or concern.", "rules")
+  );
+  writeInitFile(
+    created,
+    root,
+    path.join(brainDir, DOC_SECTIONS.recipes, "index.md"),
+    initSectionIndexMd(
+      "Recipes",
+      'Add deterministic runbooks here (e.g. bookended by a "before task" and "verify done" recipe).',
+      "recipes"
+    )
+  );
+  writeInitFile(
+    created,
+    root,
+    path.join(brainDir, DOC_SECTIONS.codebase, "index.md"),
+    initSectionIndexMd(
+      "Codebase",
+      "Add programming-model docs here — language/framework conventions, key abstractions, module layout.",
+      "codebase"
+    )
+  );
+  writeInitFile(
+    created,
+    root,
+    path.join(brainDir, DOC_SECTIONS.architecture, "index.md"),
+    initSectionIndexMd("High-level architecture", "Add macro-view docs here — how the major pieces fit together.", "architecture")
+  );
+  writeInitFile(created, root, verifyConfigPath(brainDir), initVerifyJson());
+  writeInitFile(created, root, path.join(brainDir, "CHANGELOG.md"), initChangelogMd(today));
+
+  const explicitAgentsChoice =
+    flags["agents-md"] !== undefined || flags["no-agents-md"] !== undefined || flags.yes !== undefined;
+  const interactive = !explicitAgentsChoice && !!process.stdin.isTTY && !!process.stderr.isTTY;
+  const writeAgents = interactive
+    ? await promptYesNo("Write AGENTS.md pointer + CLAUDE.md symlink? [y/N] ")
+    : !!flags["agents-md"];
+
+  if (writeAgents) {
+    const agentsPath = path.join(root, "AGENTS.md");
+    const claudePath = path.join(root, "CLAUDE.md");
+    if (pathExistsAny(agentsPath)) {
+      process.stderr.write(`warning: ${collapseHome(agentsPath)} already exists — leaving it untouched\n`);
+      skipped.push(`${path.relative(root, agentsPath)} (already exists)`);
+    } else {
+      writeInitFile(created, root, agentsPath, initAgentsMd());
+    }
+    if (pathExistsAny(claudePath)) {
+      process.stderr.write(`warning: ${collapseHome(claudePath)} already exists — leaving it untouched\n`);
+      skipped.push(`${path.relative(root, claudePath)} (already exists)`);
+    } else {
+      fs.symlinkSync("AGENTS.md", claudePath);
+      created.push(`${path.relative(root, claudePath)} -> AGENTS.md`);
+    }
+  }
+
+  const verifyRel = path.relative(root, verifyConfigPath(brainDir));
+  const lines = [kv("root", collapseHome(root)), ...toonList("created", created)];
+  if (skipped.length) lines.push(...toonList("skipped", skipped));
+  lines.push(
+    ...toonList("help", [
+      `Edit ${verifyRel} with your real typecheck/test/build commands`,
+      "Run `brain setup --app claude` to install the session-start context hook",
+      "Run `brain playbook start` to begin the first task",
+      "Run `brain check` to verify the new harness",
+    ])
+  );
+  print(lines);
+}
+
+// ---------------------------------------------------------------------------
 // Setup — session hook installation (explicit opt-in, idempotent, path repair)
 // ---------------------------------------------------------------------------
 
@@ -2384,6 +2680,16 @@ Five standing playbooks — each a full text standard printed by \`brain playboo
 - \`done\` — before declaring any task complete — full verify, harness invariants, coherence
 
 Run \`brain playbook\` for the live id/use_when index; \`brain playbook <id>\` for the full text. Referenced inline below at the point each one applies.
+
+## No \`.brain/\` yet?
+
+- \`npx -y brain-axi init\` — scaffolds a minimal .brain skeleton (HARNESS.md,
+  feature_list.json, progress.md with a first checkpoint, verify.json, doc
+  section stubs) into the current repo, terse and placeholder-marked for the
+  project to fill in. Errors (exit 1) if \`.brain/\` already exists — never
+  clobbers. \`--agents-md\` also writes an AGENTS.md pointer + CLAUDE.md
+  symlink; interactively prompts for that choice only in a real terminal,
+  else skips it by default.
 
 ## Orient (start of session)
 
@@ -2614,6 +2920,7 @@ function cmdSkill(argv) {
 // ---------------------------------------------------------------------------
 
 const COMMANDS = {
+  init: cmdInit,
   features: cmdFeatures,
   progress: cmdProgress,
   runs: cmdRuns,
