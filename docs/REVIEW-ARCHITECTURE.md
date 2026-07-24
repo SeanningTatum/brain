@@ -932,3 +932,30 @@ on it to happen to re-run `brain shots notes`. The dashboard also grows an
 in-page "Annotations" section (list + resolved/open badges) reusing the same
 carousel via the shots-payload-by-`rel` match — not yet on `main` as of this
 addendum.
+
+## v9.9 New prompt tag `reference-image` — pin-drop on artifact reference images
+
+Reference `<img>` embedded in the artifact (design references, screenshots the
+plan points at) become click-to-annotate, reusing the SAME pin-drop lightbox
+(`window.BrainLightbox`) the execution-screenshot rail uses.
+
+- **SDK (`sdk.js`):** a reference image is a rendered `<img>` with both
+  dimensions ≥ `REF_IMG_MIN` (80px), not under `[data-brain-ui]`, not a child
+  of `a[href]` (linked images are navigation). `data-brain-zoom` force-opts-in
+  (size ignored); `data-brain-no-zoom` force-opts-out. Qualifying images share
+  the diagram hover "⤢" button (now kind-aware: `"diagram"` opens the in-frame
+  pan/zoom lightbox, `"image"` hands off to the chrome). Explore-mode plain
+  click, or the button in either mode, posts
+  `brain:openReferenceImage { url, caption, alt, selector }` up to the chrome —
+  `url` is the resolved `currentSrc` (so the cross-document chrome loads the
+  same bytes); `selector` is the `cssPath` locator. Annotate-mode plain clicks
+  are unchanged (generic `element` annotation).
+- **Chrome (`chrome.js`):** `openReferenceLightbox` opens `BrainLightbox` with a
+  single-image payload (`rel` = selector, keys pins to the image);
+  `queueReferenceAnnotation` pushes each committed pin into the composer queue
+  as tag `reference-image` (mirrors `queueScreenshotAnnotation`), queueKey
+  `refimg:<selector>:<x>:<y>` (coalesces re-pins on the same spot).
+- **Server (`server.js`):** `reference-image` added to `VALID_TAGS`; normalized
+  target `{type: "reference-image", selector: <cap 300>, alt: <cap 300>,
+  x: 0-100|null, y: 0-100|null, note: <cap 2000>}`. The `text` field carries the
+  caption, so `bestAnchor` line-resolution works with no special case.
